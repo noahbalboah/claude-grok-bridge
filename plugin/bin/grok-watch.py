@@ -232,6 +232,17 @@ def act(argv):
                 f"worktree:\n{argv[2]}")
         spawn(name, m['repo'], text, m.get('max_turns', '60'))
         print(f'follow-up started for {name}')
+    elif cmd == '--claim':
+        # One session wins the right to ask Claude for a review of this run's outcome: an exclusive create.
+        if os.environ.get('GROK_AUTO_REVIEW', '1') == '0':
+            sys.exit('auto review is off (GROK_AUTO_REVIEW=0)')
+        bf = os.path.join(d, 'brief.md')
+        run_id = int(os.path.getmtime(bf)) if os.path.exists(bf) else 0
+        try:
+            os.close(os.open(os.path.join(d, f'claimed-{run_id}'), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            sys.exit('already claimed')
+        print('claimed')
     elif cmd == '--dismiss':
         if alive(d):
             sys.exit(f'{name} is still running; stop it first')
@@ -276,7 +287,7 @@ def board():
 
 if __name__ == '__main__':
     a = sys.argv[1:]
-    if a and a[0] in ('--start', '--followup', '--stop', '--cleanup', '--dismiss', '--restore'):
+    if a and a[0] in ('--start', '--followup', '--stop', '--cleanup', '--dismiss', '--restore', '--claim'):
         act(a)
     elif '--detail' in a:
         print(json.dumps(task_detail(a[a.index('--detail') + 1])))

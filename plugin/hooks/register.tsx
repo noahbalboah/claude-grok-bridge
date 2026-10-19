@@ -69,6 +69,15 @@ function diffBar(add: number, rem: number): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="6" viewBox="0 0 40 6"><rect width="40" height="6" rx="3" fill="#3a3a3a"/><rect width="${g}" height="6" rx="3" fill="#2fa36b"/><rect x="${g}" width="${40 - g}" height="6" rx="3" fill="#e0662f" opacity="${rem ? 1 : 0}"/></svg>`
 }
 
+const reviewPrompt = (name: string, state: GrokState) =>
+  `Grok task ${name} is ${LABEL[state].toLowerCase()}. Review it the grok-delegate way: grok_status for its summary, ` +
+  `grok_diff for what really changed, run the checks in its worktree, then commit, push grok/${name} and open the PR ` +
+  `if it holds up, or send one follow-up or grok_archive it if not. Tell me the outcome in two lines.`
+
+async function askReview($: EngineInterface, name: string, state: GrokState) {
+  await $.prompt.submit({ text: reviewPrompt(name, state) })
+}
+
 async function run($: EngineInterface, args: string[]) {
   return $.process.run(['python3', `${$.plugin.root}/bin/grok-watch.py`, ...args])
 }
@@ -86,9 +95,16 @@ async function refresh($: EngineInterface) {
   // A toast when a task this session saw running settles; the first read only learns the states.
   for (const t of tasks) {
     const was = seen.get(t.name)
-    if (was?.running && !t.running) $.ui.toast(`Grok ${t.name}: ${LABEL[t.state].toLowerCase()}`)
-    else if (was?.running && t.running && was.state === 'running' && t.state === 'stuck') $.ui.toast(`Grok ${t.name} has gone quiet`)
+    const settled = was?.running === true && !t.running
+    const quiet = was?.running === true && t.running && was.state === 'running' && t.state === 'stuck'
+    if (settled) $.ui.toast(`Grok ${t.name}: ${LABEL[t.state].toLowerCase()}`)
+    else if (quiet) $.ui.toast(`Grok ${t.name} has gone quiet`)
     seen.set(t.name, { running: t.running, state: t.state })
+    // Claude reviews a finished run without being asked; the claim makes it one session, once per run.
+    if (settled && t.state !== 'shipped' && t.state !== 'review') {
+      const c = await run($, ['--claim', t.name])
+      if (c.exitCode === 0) await askReview($, t.name, t.state)
+    }
   }
   await update($, board, () => tasks)
   // The new-task form starts on the repo of the latest task that recorded one.
@@ -353,11 +369,7 @@ export const register: Register = on => {
                     key="review"
                     label="Ask Claude to review"
                     variant="primary"
-                    onPress={() =>
-                      void $.prompt.submit({
-                        text: `Review Grok task ${name}: read its diff with grok_diff and its summary with grok_status, run the checks, and if it holds up commit it and open the PR; otherwise tell me what is wrong.`,
-                      })
-                    }
+                    onPress={() => void askReview($, name, d.state)}
                   />
                 )}
                 {!d.running && !d.dismissed && (
@@ -492,8 +504,14 @@ export const register: Register = on => {
           </Box>
           {sub !== '' && (
             <Text dimColor size="footnote" mono={t.running ? true : undefined} wrap="truncate-end">
-              {t.running ? sub : sub}
+              {sub}
             </Text>
+          )}
+          {!t.running && !t.dismissed && t.state !== 'shipped' && t.state !== 'review' && (
+            <Box flexDirection="row" gap="sm">
+              <Button key={`rv-${t.name}`} label="Review" variant="primary" onPress={() => void askReview($, t.name, t.state)} />
+              <Button key={`ar-${t.name}`} label="Archive" onPress={() => void action($, ['--dismiss', t.name])} />
+            </Box>
           )}
         </Box>
       )
@@ -627,9 +645,21 @@ export const register: Register = on => {
             <Text size="footnote" color={COLOR[t.state]} wrap="truncate-end">
               {LABEL[t.state]}
             </Text>
-            <Text dimColor size="footnote" mono={t.running ? true : undefined} wrap="truncate-end">
-              {t.running ? t.activity : t.last}
-            </Text>
+            <Box flexGrow={1}>
+              <Text dimColor size="footnote" mono={t.running ? true : undefined} wrap="truncate-end">
+                {t.running ? t.activity : t.last}
+              </Text>
+            </Box>
+            {!t.running && t.state !== 'shipped' && t.state !== 'review' && (
+              <Box flexDirection="row" gap="xs" flexShrink={0}>
+                <Button key={`band-rv-${t.name}`} plain onPress={() => void askReview($, t.name, t.state)}>
+                  Review
+                </Button>
+                <Button key={`band-ar-${t.name}`} plain dimColor onPress={() => void action($, ['--dismiss', t.name])}>
+                  Archive
+                </Button>
+              </Box>
+            )}
           </Box>
         ))}
       </Box>

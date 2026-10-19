@@ -28,7 +28,22 @@ grok -p "$(cat "$brief")" -m "$model" --cwd "$wt" --sandbox workspace --permissi
   --deny 'Bash(gh *)' --deny 'Bash(ssh *)' --deny 'Bash(scp *)' --deny 'Bash(rsync *)' --deny 'Bash(curl *)' \
   --deny 'Bash(rm -rf*)' --deny 'Bash(*deploy*)' --deny 'Bash(doppler *)' --deny 'Read(**/.env*)' \
   --rules "$rules" --max-turns "$turns" --no-subagents --output-format streaming-json \
-  >"$state/events.ndjson" 2>"$state/stderr.log" </dev/null
+  >"$state/events.ndjson" 2>"$state/stderr.log" </dev/null &
+gpid=$!
+# Watchdog: a run that has written nothing for GROK_IDLE_LIMIT seconds (default 30 min) is hung, often right after its
+# final summary; stop it so its result gets reviewed instead of waiting forever.
+limit=${GROK_IDLE_LIMIT:-1800}
+while kill -0 "$gpid" 2>/dev/null; do
+  sleep 20
+  mt=$(stat -f %m "$state/events.ndjson" 2>/dev/null || stat -c %Y "$state/events.ndjson" 2>/dev/null || date +%s)
+  if [ $(( $(date +%s) - mt )) -gt "$limit" ]; then
+    echo "watchdog: no output for over ${limit}s, stopped" >>"$state/stderr.log"
+    kill "$gpid" 2>/dev/null
+    sleep 5
+    kill -9 "$gpid" 2>/dev/null
+  fi
+done
+wait "$gpid"
 echo $? >"$state/exit"
 git -C "$wt" status --short >"$state/diffstat"
 git -C "$wt" diff --stat >>"$state/diffstat"
