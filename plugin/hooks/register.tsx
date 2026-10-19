@@ -19,6 +19,8 @@ const draft = atom(
 const NEW = '+new'
 const bandOpen = atom({ plugin: 'grok-bridge', key: 'bandOpen' } as const, false)
 const showArchived = atom({ plugin: 'grok-bridge', key: 'showArchived' } as const, false)
+// Tasks this session already asked Claude to review, until they run again: the buttons say Sent and do nothing.
+const reviewSent = atom({ plugin: 'grok-bridge', key: 'reviewSent' } as const, [] as string[])
 
 const COLOR: Record<GrokState, string> = {
   running: '#4a8cf7',
@@ -75,6 +77,16 @@ const reviewPrompt = (name: string, state: GrokState) =>
   `if it holds up, or send one follow-up or grok_archive it if not. Tell me the outcome in two lines.`
 
 async function askReview($: EngineInterface, name: string, state: GrokState) {
+  let first = false
+  await update($, reviewSent, x => {
+    first = !x.includes(name)
+    return first ? [...x, name] : x
+  })
+  if (!first) {
+    $.ui.toast(`Already sent ${name} to Claude`)
+    return
+  }
+  $.ui.toast(`Sent ${name} to Claude for review`)
   await $.prompt.submit({ text: reviewPrompt(name, state) })
 }
 
@@ -100,6 +112,7 @@ async function refresh($: EngineInterface) {
     if (settled) $.ui.toast(`Grok ${t.name}: ${LABEL[t.state].toLowerCase()}`)
     else if (quiet) $.ui.toast(`Grok ${t.name} has gone quiet`)
     seen.set(t.name, { running: t.running, state: t.state })
+    if (t.running) await update($, reviewSent, x => (x.includes(t.name) ? x.filter(n => n !== t.name) : x))
     // Claude reviews a finished run without being asked; the claim makes it one session, once per run.
     if (settled && t.state !== 'shipped' && t.state !== 'review') {
       const c = await run($, ['--claim', t.name, await $.session.id()])
@@ -167,6 +180,7 @@ export const register: Register = on => {
     const name = await read($, selected)
     const note = await read($, notice)
     const dr = await read($, draft)
+    const sent = await read($, reviewSent)
     const icon = (s: GrokState, px: number) => (
       <Svg source={glyph(s)} alt={LABEL[s]} width={px} height={px} isInteractive={s === 'running' ? true : undefined} />
     )
@@ -367,7 +381,7 @@ export const register: Register = on => {
                 {!d.running && d.state !== 'shipped' && d.state !== 'review' && (
                   <Button
                     key="review"
-                    label="Ask Claude to review"
+                    label={sent.includes(name) ? 'Sent to Claude ✓' : 'Ask Claude to review'}
                     variant="primary"
                     onPress={() => void askReview($, name, d.state)}
                   />
@@ -509,7 +523,7 @@ export const register: Register = on => {
           )}
           {!t.running && !t.dismissed && t.state !== 'shipped' && t.state !== 'review' && (
             <Box flexDirection="row" gap="sm">
-              <Button key={`rv-${t.name}`} label="Review" variant="primary" onPress={() => void askReview($, t.name, t.state)} />
+              <Button key={`rv-${t.name}`} label={sent.includes(t.name) ? 'Sent ✓' : 'Review'} variant={sent.includes(t.name) ? undefined : 'primary'} onPress={() => void askReview($, t.name, t.state)} />
               <Button key={`ar-${t.name}`} label="Archive" onPress={() => void action($, ['--dismiss', t.name])} />
             </Box>
           )}
@@ -564,6 +578,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const all = await read($, board)
+    const sent = await read($, reviewSent)
     const tasks = all.filter(t => !t.dismissed && (t.running || t.idle < RECENT_S))
     if (e.props.hasSurvey || tasks.length === 0) return next(e)
     const { Box, Text, Svg, Button } = $.ui.resolve(e)
@@ -652,8 +667,8 @@ export const register: Register = on => {
             </Box>
             {!t.running && t.state !== 'shipped' && t.state !== 'review' && (
               <Box flexDirection="row" gap="xs" flexShrink={0}>
-                <Button key={`band-rv-${t.name}`} plain onPress={() => void askReview($, t.name, t.state)}>
-                  Review
+                <Button key={`band-rv-${t.name}`} plain dimColor={sent.includes(t.name) ? true : undefined} onPress={() => void askReview($, t.name, t.state)}>
+                  {sent.includes(t.name) ? 'Sent ✓' : 'Review'}
                 </Button>
                 <Button key={`band-ar-${t.name}`} plain dimColor onPress={() => void action($, ['--dismiss', t.name])}>
                   Archive

@@ -57,6 +57,7 @@ declare module 'claude-code' {
       draft: GrokDraft
       bandOpen: boolean
       showArchived: boolean
+      reviewSent: string[]
     }
   }
 }
