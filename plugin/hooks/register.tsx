@@ -65,7 +65,8 @@ async function run($: EngineInterface, args: string[]) {
   return $.process.run(['python3', `${$.plugin.root}/bin/grok-watch.py`, ...args])
 }
 
-const seen = new Map<string, GrokState>()
+// What each task was at the last read, so a toast fires once per change, never on every refresh.
+const seen = new Map<string, { running: boolean; state: GrokState }>()
 
 async function refresh($: EngineInterface) {
   const r = await run($, ['--json'])
@@ -77,9 +78,9 @@ async function refresh($: EngineInterface) {
   // A toast when a task this session saw running settles; the first read only learns the states.
   for (const t of tasks) {
     const was = seen.get(t.name)
-    if ((was === 'running' || was === 'stuck') && !t.running) $.ui.toast(`Grok ${t.name}: ${LABEL[t.state].toLowerCase()}`)
-    else if (was === 'running' && t.state === 'stuck') $.ui.toast(`Grok ${t.name} has gone quiet`)
-    seen.set(t.name, t.state)
+    if (was?.running && !t.running) $.ui.toast(`Grok ${t.name}: ${LABEL[t.state].toLowerCase()}`)
+    else if (was?.running && t.running && was.state === 'running' && t.state === 'stuck') $.ui.toast(`Grok ${t.name} has gone quiet`)
+    seen.set(t.name, { running: t.running, state: t.state })
   }
   await update($, board, () => tasks)
   // The new-task form starts on the repo of the latest task that recorded one.
