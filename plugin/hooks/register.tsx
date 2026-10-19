@@ -11,7 +11,8 @@ const detail = atom({ plugin: 'grok-bridge', key: 'detail' } as const, null as G
 const notice = atom({ plugin: 'grok-bridge', key: 'notice' } as const, '')
 // Tool-call groups the person expanded in a transcript, by `<task>:<index>`.
 const open = atom({ plugin: 'grok-bridge', key: 'open' } as const, [] as string[])
-const draft = atom({ plugin: 'grok-bridge', key: 'draft' } as const, { name: '', repo: '', brief: '', followup: '' } as GrokDraft)
+const draft = atom({ plugin: 'grok-bridge', key: 'draft' } as const, { name: '', repo: '', brief: '', followup: '', show: false } as GrokDraft)
+const bandOpen = atom({ plugin: 'grok-bridge', key: 'bandOpen' } as const, false)
 
 const COLOR: Record<GrokState, string> = {
   running: '#4a8cf7',
@@ -282,50 +283,65 @@ export const register: Register = on => {
     const running = tasks.filter(t => t.running)
     const review = tasks.filter(t => !t.running && t.state !== 'shipped')
     const shipped = tasks.filter(t => t.state === 'shipped')
-    const row = (t: GrokTask) => (
-      <Box flexDirection="column" key={t.name}>
-        <Box flexDirection="row" alignItems="center" gap="sm">
-          {icon(t.state, 14)}
-          <Box flexGrow={1}>
-            <Button key={`open-${t.name}`} plain dimColor={t.state === 'shipped' ? true : undefined} onPress={() => void pick($, t.name)}>
-              {t.name}
-            </Button>
+    const card = (t: GrokTask) => {
+      const changed = t.added > 0 || t.removed > 0
+      const sub = t.running && t.activity !== '' ? t.activity : t.state !== 'shipped' ? t.last : ''
+      return (
+        <Box
+          flexDirection="column"
+          key={t.name}
+          borderStyle="round"
+          borderColor="#2e2e2e"
+          backgroundColor="#202020"
+          paddingX="sm"
+          paddingY="xs"
+          gap="xs"
+          hover={{ borderColor: COLOR[t.state] }}
+        >
+          <Box flexDirection="row" alignItems="center" gap="sm">
+            {icon(t.state, 16)}
+            <Box flexGrow={1}>
+              <Button key={`open-${t.name}`} plain onPress={() => void pick($, t.name)}>
+                {t.name}
+              </Button>
+            </Box>
+            {prChip(t)}
           </Box>
-          {(t.added > 0 || t.removed > 0) && (
-            <Svg source={diffBar(t.added, t.removed)} alt={`+${t.added} −${t.removed}`} width={40} height={6} />
+          <Box flexDirection="row" alignItems="center" gap="sm">
+            <Text size="footnote" color={COLOR[t.state]}>
+              {LABEL[t.state]}
+            </Text>
+            {changed && <Svg source={diffBar(t.added, t.removed)} alt={`+${t.added} −${t.removed}`} width={40} height={6} />}
+            <Text dimColor size="footnote" tabular>
+              {changed ? `+${t.added} −${t.removed} · ` : ''}
+              {t.elapsed > 0 ? `${dur(t.elapsed)} · ` : ''}
+              {kilo(t.tokens)} tokens
+            </Text>
+          </Box>
+          {sub !== '' && (
+            <Text dimColor size="footnote" mono={t.running ? true : undefined} wrap="truncate-end">
+              {t.running ? sub : sub}
+            </Text>
           )}
-          <Text dimColor tabular>
-            {t.added > 0 || t.removed > 0 ? `+${t.added} −${t.removed} · ` : ''}
-            {dur(t.elapsed)} · {kilo(t.tokens)} tok
-          </Text>
         </Box>
-        {t.running && t.activity !== '' ? (
-          <Text mono dimColor size="footnote" wrap="truncate-end">
-            ▸ {t.activity}
-          </Text>
-        ) : t.last !== '' && t.state !== 'shipped' ? (
-          <Text dimColor size="footnote" wrap="truncate-end">
-            {t.last}
-          </Text>
-        ) : null}
-        {prChip(t)}
-      </Box>
-    )
+      )
+    }
     const section = (title: string, list: GrokTask[]) =>
       list.length === 0 ? null : (
         <Box flexDirection="column" gap="xs" key={`s-${title}`}>
-          <Text dimColor size="footnote" weight="medium">
+          <Text dimColor size="caption" weight="semibold">
             {title.toUpperCase()} · {list.length}
           </Text>
-          {list.map(row)}
+          {list.map(card)}
         </Box>
       )
-    const lastRepo = dr.repo
     return (
-      <Box flexDirection="column" gap="sm" padding="sm">
-        <Box flexDirection="row" justifyContent="space-between">
-          <Text>{running.length} running</Text>
-          <Text dimColor tabular>
+      <Box flexDirection="column" gap="md" padding="sm">
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+          <Text weight="semibold">
+            {running.length > 0 ? `${running.length} running` : 'All quiet'}
+          </Text>
+          <Text dimColor size="footnote" tabular>
             {tasks.length} task{tasks.length === 1 ? '' : 's'} · {kilo(today(tasks, now))} tokens today
           </Text>
         </Box>
@@ -337,47 +353,65 @@ export const register: Register = on => {
         {section('Running', running)}
         {section('Needs review', review)}
         {section('Shipped', shipped)}
-        <Box flexDirection="column" gap="xs">
-          <Text dimColor size="footnote" weight="medium">
-            NEW TASK
+        {!dr.show ? (
+          <Button key="new-open" label="+ New task" onPress={() => void update($, draft, x => ({ ...x, show: true }))} />
+        ) : (
+          <Box
+            flexDirection="column"
+            gap="xs"
+            borderStyle="round"
+            borderColor="#2e2e2e"
+            backgroundColor="#202020"
+            paddingX="sm"
+            paddingY="xs"
+          >
+            <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+              <Text weight="semibold">New task</Text>
+              <Button key="new-close" plain dimColor onPress={() => void update($, draft, x => ({ ...x, show: false }))}>
+                Cancel
+              </Button>
+            </Box>
+            <Input
+              key="new-name"
+              label="Name"
+              placeholder="fix-login-overflow"
+              value={dr.name}
+              onInput={v => void update($, draft, x => ({ ...x, name: v }))}
+              onSubmit={v => void update($, draft, x => ({ ...x, name: v }))}
+            />
+            <Input
+              key="new-repo"
+              label="Repo"
+              placeholder="/path/to/a/git/checkout"
+              value={dr.repo}
+              onInput={v => void update($, draft, x => ({ ...x, repo: v }))}
+              onSubmit={v => void update($, draft, x => ({ ...x, repo: v }))}
+            />
+            <Input
+              key="new-brief"
+              label="Brief"
+              placeholder="What to do, where, and what done looks like"
+              submitLabel="Start"
+              value={dr.brief}
+              onInput={v => void update($, draft, x => ({ ...x, brief: v }))}
+              onSubmit={v => {
+                const n = dr.name.trim()
+                const repo = dr.repo.trim()
+                if (n === '' || repo === '' || v.trim() === '') {
+                  void update($, notice, () => 'A new task needs a name, a repo and a brief.')
+                  return
+                }
+                void update($, draft, x => ({ ...x, name: '', brief: '', show: false }))
+                void action($, ['--start', n, repo, v.trim()])
+              }}
+            />
+          </Box>
+        )}
+        {note !== '' && (
+          <Text dimColor size="footnote">
+            {note}
           </Text>
-          <Input
-            key="new-name"
-            placeholder="name (lowercase-with-dashes)"
-            value={dr.name}
-            onInput={v => void update($, draft, x => ({ ...x, name: v }))}
-            onSubmit={v => void update($, draft, x => ({ ...x, name: v }))}
-          />
-          <Input
-            key="new-repo"
-            placeholder="repo path (an absolute git checkout)"
-            value={lastRepo}
-            onInput={v => void update($, draft, x => ({ ...x, repo: v }))}
-            onSubmit={v => void update($, draft, x => ({ ...x, repo: v }))}
-          />
-          <Input
-            key="new-brief"
-            placeholder="brief: what to do, where, and what done looks like"
-            submitLabel="Start"
-            value={dr.brief}
-            onInput={v => void update($, draft, x => ({ ...x, brief: v }))}
-            onSubmit={v => {
-              const n = dr.name.trim()
-              const repo = dr.repo.trim()
-              if (n === '' || repo === '' || v.trim() === '') {
-                void update($, notice, () => 'A new task needs a name, a repo and a brief.')
-                return
-              }
-              void update($, draft, x => ({ ...x, name: '', brief: '' }))
-              void action($, ['--start', n, repo, v.trim()])
-            }}
-          />
-          {note !== '' && (
-            <Text dimColor size="footnote">
-              {note}
-            </Text>
-          )}
-        </Box>
+        )}
       </Box>
     )
   })
@@ -387,48 +421,73 @@ export const register: Register = on => {
     const tasks = all.filter(t => t.running || t.idle < RECENT_S)
     if (e.props.hasSurvey || tasks.length === 0) return next(e)
     const { Box, Text, Svg, Button } = $.ui.resolve(e)
-    // One line: the icon says the state, so a task is its name plus, while running, its elapsed time.
-    const shown = tasks.slice(0, 4)
-
-    return (
-      <Box flexDirection="row" alignItems="center" gap="sm" flexWrap="nowrap" overflow="hidden">
-        <Text dimColor>Grok</Text>
-        {all.some(t => t.limited) && <Text color={COLOR.failed}>rate-limited</Text>}
-        {shown.map(t => (
-          <Box flexDirection="row" alignItems="center" gap="xs" flexShrink={0} key={`band-${t.name}`}>
-            <Svg
-              source={glyph(t.state)}
-              alt={LABEL[t.state]}
-              width={12}
-              height={12}
-              isInteractive={t.state === 'running' ? true : undefined}
-            />
-            <Button
-              key={`band-open-${t.name}`}
-              plain
-              dimColor
-              onPress={async () => {
-                await pick($, t.name)
-                await $.ui.open({ id: PANE, title: 'Grok' })
-              }}
-            >
-              {t.name}
-              {t.running ? <Text dimColor> {dur(t.elapsed)}</Text> : ''}
-            </Button>
-          </Box>
-        ))}
-        {tasks.length > shown.length && <Text dimColor>+{tasks.length - shown.length}</Text>}
+    const expanded = await read($, bandOpen)
+    const chip = (t: GrokTask) => (
+      <Box flexDirection="row" alignItems="center" gap="xs" flexShrink={0} key={`band-${t.name}`}>
+        <Svg
+          source={glyph(t.state)}
+          alt={LABEL[t.state]}
+          width={12}
+          height={12}
+          isInteractive={t.state === 'running' ? true : undefined}
+        />
         <Button
-          key="band-all"
+          key={`band-open-${t.name}`}
           plain
           dimColor
           onPress={async () => {
-            await pick($, '')
+            await pick($, t.name)
             await $.ui.open({ id: PANE, title: 'Grok' })
           }}
         >
-          All ›
+          {t.name}
+          {t.running ? <Text dimColor> {dur(t.elapsed)}</Text> : ''}
         </Button>
+      </Box>
+    )
+    const openAll = async () => {
+      await pick($, '')
+      await $.ui.open({ id: PANE, title: 'Grok' })
+    }
+    // Collapsed: one line of icon and name, the icon saying the state. Expanded: every task with what it is doing.
+    if (!expanded) {
+      const shown = tasks.slice(0, 4)
+      return (
+        <Box flexDirection="row" alignItems="center" gap="sm" flexWrap="nowrap" overflow="hidden">
+          <Text dimColor>Grok</Text>
+          {all.some(t => t.limited) && <Text color={COLOR.failed}>rate-limited</Text>}
+          {shown.map(chip)}
+          {tasks.length > shown.length && <Text dimColor>+{tasks.length - shown.length}</Text>}
+          <Button key="band-expand" plain dimColor onPress={() => void update($, bandOpen, () => true)}>
+            ▾
+          </Button>
+          <Button key="band-all" plain dimColor onPress={() => void openAll()}>
+            All ›
+          </Button>
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column" gap="xs">
+        <Box flexDirection="row" alignItems="center" gap="sm">
+          <Text dimColor>Grok</Text>
+          {all.some(t => t.limited) && <Text color={COLOR.failed}>rate-limited</Text>}
+          <Box flexGrow={1} />
+          <Button key="band-collapse" plain dimColor onPress={() => void update($, bandOpen, () => false)}>
+            ▴
+          </Button>
+          <Button key="band-all" plain dimColor onPress={() => void openAll()}>
+            All ›
+          </Button>
+        </Box>
+        {tasks.map(t => (
+          <Box flexDirection="row" alignItems="center" gap="sm" key={`band-row-${t.name}`}>
+            {chip(t)}
+            <Text dimColor size="footnote" wrap="truncate-end">
+              {t.running ? t.activity : LABEL[t.state].toLowerCase()}
+            </Text>
+          </Box>
+        ))}
       </Box>
     )
   })

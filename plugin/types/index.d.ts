@@ -33,7 +33,7 @@ export type GrokDetail = GrokTask & {
   entries: GrokEntry[]
 }
 
-export type GrokDraft = { name: string; repo: string; brief: string; followup: string }
+export type GrokDraft = { name: string; repo: string; brief: string; followup: string; show: boolean }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -45,6 +45,7 @@ declare module 'claude-code' {
       notice: string
       open: string[]
       draft: GrokDraft
+      bandOpen: boolean
     }
   }
 }

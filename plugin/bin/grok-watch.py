@@ -39,15 +39,27 @@ def alive(d):
         return False
 
 
-def tool_summary(e):
+def tool_summary(e, wt=''):
+    """A tool call as a person would write it: `$ cargo test`, `read src/x.rs`, `edit src/x.rs`."""
     raw = e.get('rawInput') or {}
+    tool = e.get('toolName') or e.get('title') or 'tool'
+    rel = lambda p: str(p)[len(wt) + 1:] if wt and str(p).startswith(wt + '/') else str(p)
+    if tool == 'run_terminal_command':
+        return '$ ' + ' '.join(str(raw.get('command', '')).split())[:160]
+    if tool in ('read_file', 'search_replace', 'list_dir', 'write_file'):
+        verb = {'read_file': 'read', 'search_replace': 'edit', 'list_dir': 'ls', 'write_file': 'write'}[tool]
+        return f"{verb} {rel(raw.get('target_file') or raw.get('path') or '')}"[:160]
+    if tool == 'grep':
+        return f"grep {raw.get('pattern') or raw.get('query') or ''}"[:160]
+    if tool == 'get_command_or_subagent_output':
+        return 'waiting on a command'
     arg = raw.get('command') or raw.get('target_file') or raw.get('path') or raw.get('pattern') or raw.get('query') or ''
-    return f"{e.get('toolName') or e.get('title') or 'tool'} {' '.join(str(arg).split())[:160]}".strip()
+    return f"{tool} {' '.join(rel(arg).split())[:140]}".strip()
 
 
-def scan(ev):
+def scan(ev, wt=''):
     """One pass over the events: count, tokens, the last tool call, and the tail of Grok's words."""
-    events, tokens, activity, words = 0, 0, '', []
+    events, tokens, activity, words, block, kind = 0, 0, '', [], [], ''
     for line in (open(ev, 'rb') if os.path.exists(ev) else []):
         events += 1
         head = line[:24]
@@ -56,16 +68,22 @@ def scan(ev):
                 u = json.loads(line).get('usage') or {}
                 tokens += int(u.get('input_tokens', 0)) + int(u.get('output_tokens', 0))
             elif head.startswith(b'{"type":"tool_call"'):
-                activity = tool_summary(json.loads(line))
-            elif head.startswith(b'{"type":"text"') or head.startswith(b'{"type":"thought"'):
+                activity = tool_summary(json.loads(line), wt)
+                kind = 'tool'
+            elif head.startswith(b'{"type":"text"'):
                 d = json.loads(line).get('data')
                 if isinstance(d, str):
-                    words.append(d)
-                    if len(words) > 400:
-                        words = words[-200:]
+                    if kind != 'text':
+                        block = []
+                    block.append(d)
+                    kind = 'text'
+            elif head.startswith(b'{"type":"thought"'):
+                kind = 'thought'
         except ValueError:
             pass
-    return events, tokens, activity, ' '.join(''.join(words).split())[-140:]
+    # The start of Grok's latest message, which is where its summary begins, not the tail of a stream.
+    text = ' '.join(''.join(block).split())
+    return events, tokens, activity, (text[:157] + '…') if len(text) > 160 else text
 
 
 def numstat(wt):
@@ -117,12 +135,12 @@ def task_json(name):
     running = code is None and up is not False
     err = rd(d, 'stderr.log')
     low = err.lower()
-    events, tokens, activity, last = scan(ev)
+    m = meta_of(d)
+    wt = m.get('worktree', '')
+    events, tokens, activity, last = scan(ev, wt)
     started = os.path.getmtime(os.path.join(d, 'brief.md')) if os.path.exists(os.path.join(d, 'brief.md')) else 0
     ended = os.path.getmtime(os.path.join(d, 'exit')) if code is not None else time.time()
     idle = int(time.time() - os.path.getmtime(ev)) if os.path.exists(ev) else 0
-    m = meta_of(d)
-    wt = m.get('worktree', '')
     add, rem = numstat(wt)
     pr = pr_of(d, name, m.get('repo', ''))
     hit_limit = 'max turns' in low
@@ -161,7 +179,7 @@ def task_detail(name, limit=160):
             else:
                 entries.append({'kind': t, 'body': e['data']})
         elif t == 'tool_call':
-            entries.append({'kind': 'tool', 'body': tool_summary(e)})
+            entries.append({'kind': 'tool', 'body': tool_summary(e, meta_of(d).get('worktree', ''))})
     for x in entries:
         x['body'] = x['body'].strip()
     entries = [x for x in entries if x['body']]

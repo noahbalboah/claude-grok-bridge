@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "grok-bridge",
-      "version": "0.6.1",
+      "version": "0.7.0",
       "source": "./plugin",
       "description": "Hand bounded tasks to Grok Build headless (own worktree, sandboxed, no commits); list, watch, diff and stop them from Claude; live pane in the Claude app"
     }
