@@ -14,9 +14,12 @@ repo=$1; name=$2; brief=$3; turns=${4:-60}; model=${5:-${GROK_MODEL:-grok-4.7}}
 state="$HOME/.local/state/grok-tasks/$name"
 wt="$repo/.worktrees/grok-$name"
 mkdir -p "$state"
+# The Claude session that started the task reviews it; a follow-up keeps the first owner.
+owner=${GROK_OWNER:-${CLAUDE_CODE_SESSION_ID:-}}
+[ -n "$owner" ] || owner=$(sed -n 's/^owner=//p' "$state/meta" 2>/dev/null)
 rm -f "$state/exit" "$state/diffstat"
 cp "$brief" "$state/brief.md"
-printf 'repo=%s\nworktree=%s\nmodel=%s\nmax_turns=%s\nstarted=%s\n' "$repo" "$wt" "$model" "$turns" "$(date -u +%FT%TZ)" >"$state/meta"
+printf 'repo=%s\nworktree=%s\nmodel=%s\nmax_turns=%s\nstarted=%s\nowner=%s\n' "$repo" "$wt" "$model" "$turns" "$(date -u +%FT%TZ)" "$owner" >"$state/meta"
 echo $$ >"$state/pid"
 git -C "$repo" fetch -q origin
 base=${GROK_BASE:-$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD)}

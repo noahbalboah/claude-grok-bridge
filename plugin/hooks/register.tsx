@@ -102,7 +102,7 @@ async function refresh($: EngineInterface) {
     seen.set(t.name, { running: t.running, state: t.state })
     // Claude reviews a finished run without being asked; the claim makes it one session, once per run.
     if (settled && t.state !== 'shipped' && t.state !== 'review') {
-      const c = await run($, ['--claim', t.name])
+      const c = await run($, ['--claim', t.name, await $.session.id()])
       if (c.exitCode === 0) await askReview($, t.name, t.state)
     }
   }

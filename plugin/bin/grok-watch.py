@@ -236,6 +236,9 @@ def act(argv):
         # One session wins the right to ask Claude for a review of this run's outcome: an exclusive create.
         if os.environ.get('GROK_AUTO_REVIEW', '1') == '0':
             sys.exit('auto review is off (GROK_AUTO_REVIEW=0)')
+        owner = meta_of(d).get('owner', '')
+        if owner and len(argv) > 2 and argv[2] and argv[2] != owner:
+            sys.exit('another session started this task')
         bf = os.path.join(d, 'brief.md')
         run_id = int(os.path.getmtime(bf)) if os.path.exists(bf) else 0
         try:
