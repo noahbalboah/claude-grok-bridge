@@ -14,7 +14,10 @@ const COLOR = { running: '#4a8cf7', done: '#2fa36b', failed: '#e0662f' } as cons
 const LABEL = { running: 'Running', done: 'Done', failed: 'Failed' } as const
 
 const ago = (s: number) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`)
-const kilo = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`)
+const kilo = (n: number) => (n < 1000 ? `${n}` : n < 1e6 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1e6).toFixed(1)}M`)
+// Tokens Grok processed for tasks started in the last 24 hours. Grok exposes no remaining-quota figure, only usage.
+const today = (tasks: GrokTask[], now: number) =>
+  tasks.filter(t => now - t.started < 86400).reduce((sum, t) => sum + t.tokens, 0)
 // Sizes on a Box are cells; an Svg is measured in CSS pixels, so the thin bar and the swatches are drawn as Svg.
 // A running task gets a spinning arc. SMIL animation plays only in an interactive Svg, so `mark` sets that for it.
 const spinner = (c: string, px: number) =>
@@ -148,11 +151,14 @@ export const register: Register = on => {
         <Box flexDirection="row" justifyContent="space-between">
           <Text>{count('running')} running</Text>
           <Text dimColor tabular>
-            {tasks.length} task{tasks.length === 1 ? '' : 's'}
+            {tasks.length} task{tasks.length === 1 ? '' : 's'} · {kilo(today(tasks, Date.now() / 1000))} tokens today
           </Text>
         </Box>
         {tasks.length > 0 && <Svg source={bar} alt={`${count('running')} of ${tasks.length} running`} height={4} />}
         {err !== '' && <Text color={COLOR.failed}>{err}</Text>}
+        {tasks.some(t => t.limited) && (
+          <Text color={COLOR.failed}>Grok reported a rate or usage limit; new tasks may wait or fail.</Text>
+        )}
         {tasks.length === 0 && err === '' && <Text dimColor>No Grok tasks yet.</Text>}
         {tasks.map(t => (
           <Box flexDirection="column" key={t.name}>
@@ -179,7 +185,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const tasks = (await read($, board)).filter(t => t.state === 'running' || t.idle < RECENT_S)
+    const all = await read($, board)
+    const tasks = all.filter(t => t.state === 'running' || t.idle < RECENT_S)
     if (e.props.hasSurvey || tasks.length === 0) return next(e)
     const { Box, Text, Svg, Button } = $.ui.resolve(e)
     const running = tasks.filter(t => t.state === 'running').length
@@ -188,8 +195,9 @@ export const register: Register = on => {
       <Box flexDirection="row" alignItems="center" gap="sm" flexWrap="wrap">
         <Text dimColor>Grok</Text>
         <Text dimColor tabular>
-          {running} running
+          {running} running · {kilo(today(all, Date.now() / 1000))} tokens today
         </Text>
+        {all.some(t => t.limited) && <Text color={COLOR.failed}>rate-limited</Text>}
         {tasks.slice(0, 4).map(t => (
           <Box flexDirection="row" alignItems="center" gap="xs" key={`band-${t.name}`}>
             {t.state === 'running' ? <Svg source={spinner(COLOR.running, 12)} alt="Running" width={12} height={12} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={8} height={8} />}

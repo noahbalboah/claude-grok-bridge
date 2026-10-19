@@ -5,6 +5,9 @@ export type GrokTask = {
   idle: number
   files: number
   last: string
+  tokens: number
+  limited: boolean
+  started: number
 }
 
 export type GrokEntry = { kind: 'text' | 'thought' | 'tool'; body: string }

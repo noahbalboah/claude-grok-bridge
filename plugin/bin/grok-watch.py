@@ -66,8 +66,20 @@ def task_json(name):
     state = 'running' if code is None and (alive or not os.path.exists(pid)) else ('done' if code == '0' else 'failed')
     ds = os.path.join(d, 'diffstat')
     files = sum(1 for l in open(ds) if l[:2].strip() and '|' not in l) if os.path.exists(ds) else 0
-    return {'name': name, 'state': state,
-            'events': sum(1 for _ in open(ev, 'rb')) if os.path.exists(ev) else 0,
+    events, tokens = 0, 0
+    for line in (open(ev, 'rb') if os.path.exists(ev) else []):
+        events += 1
+        if line.startswith(b'{"type":"usage"'):
+            try:
+                u = json.loads(line).get('usage') or {}
+                tokens += int(u.get('input_tokens', 0)) + int(u.get('output_tokens', 0))
+            except ValueError:
+                pass
+    err = open(os.path.join(d, 'stderr.log'), errors='replace').read().lower() if os.path.exists(os.path.join(d, 'stderr.log')) else ''
+    limited = any(k in err for k in ('rate limit', 'rate_limit', '429', 'quota', 'usage limit'))
+    return {'name': name, 'state': state, 'tokens': tokens, 'limited': limited,
+            'started': os.path.getmtime(os.path.join(d, 'brief.md')) if os.path.exists(os.path.join(d, 'brief.md')) else 0,
+            'events': events,
             'idle': int(time.time() - os.path.getmtime(ev)) if os.path.exists(ev) else 0,
             'files': files, 'last': last_text(ev, 140)}
 
