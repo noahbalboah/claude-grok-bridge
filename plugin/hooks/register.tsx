@@ -19,13 +19,26 @@ const kilo = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`)
 const swatch = (c: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" rx="2" fill="${c}"/></svg>`
 
+const seen = new Map<string, GrokTask['state']>()
+// The band shows running tasks and ones that finished in the last half hour.
+const RECENT_S = 1800
+
 async function refresh($: EngineInterface) {
   const r = await $.process.run(['python3', `${$.plugin.root}/bin/grok-watch.py`, '--json'])
   if (r.exitCode !== 0) {
     await update($, error, () => r.stderr.slice(0, 200) || 'grok-watch failed')
     return
   }
-  await update($, board, () => JSON.parse(r.stdout) as GrokTask[])
+  const tasks = JSON.parse(r.stdout) as GrokTask[]
+  // A toast when a task this session saw running finishes; the first read only learns the states.
+  for (const t of tasks) {
+    const was = seen.get(t.name)
+    if (was === 'running' && t.state !== 'running') $.ui.toast(`Grok ${t.name}: ${LABEL[t.state].toLowerCase()}`)
+    seen.set(t.name, t.state)
+  }
+  await update($, board, () => tasks)
+  const running = tasks.filter(t => t.state === 'running').length
+  $.ui.status(running > 0 ? `Grok: ${running} running` : undefined)
   await update($, error, () => '')
   const name = await read($, selected)
   if (name !== '') {
@@ -42,11 +55,10 @@ async function pick($: EngineInterface, name: string) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'grok-board', description: 'Show the Grok tasks in a pane' })
+    await $.command.register({ name: 'grok', description: 'Open the Grok pane' })
     await update($, selected, () => '')
     void refresh($)
     $.clock.every(5000, () => void refresh($))
-    void $.ui.open({ id: PANE, title: 'Grok' })
-
     return next(e)
   })
 
@@ -161,6 +173,49 @@ export const register: Register = on => {
         ))}
       </Box>
     )
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const tasks = (await read($, board)).filter(t => t.state === 'running' || t.idle < RECENT_S)
+    if (e.props.hasSurvey || tasks.length === 0) return next(e)
+    const { Box, Text, Svg, Button } = $.ui.resolve(e)
+    const running = tasks.filter(t => t.state === 'running').length
+
+    return (
+      <Box flexDirection="row" alignItems="center" gap="sm" flexWrap="wrap">
+        <Text dimColor>Grok</Text>
+        <Text dimColor tabular>
+          {running} running
+        </Text>
+        {tasks.slice(0, 4).map(t => (
+          <Box flexDirection="row" alignItems="center" gap="xs" key={`band-${t.name}`}>
+            <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={8} height={8} />
+            <Button
+              key={`band-open-${t.name}`}
+              plain
+              dimColor
+              onPress={async () => {
+                await pick($, t.name)
+                await $.ui.open({ id: PANE, title: 'Grok' })
+              }}
+            >
+              {t.name} <Text dimColor>{LABEL[t.state].toLowerCase()}</Text>
+            </Button>
+          </Box>
+        ))}
+        {tasks.length > 4 && <Text dimColor>+{tasks.length - 4}</Text>}
+        <Button key="band-all" plain dimColor onPress={async () => { await pick($, ''); await $.ui.open({ id: PANE, title: 'Grok' }) }}>
+          All
+        </Button>
+      </Box>
+    )
+  })
+
+  on('command.run', { command: 'grok' }, async $ => {
+    await pick($, '')
+    await $.ui.open({ id: PANE, title: 'Grok' })
+
+    return { text: 'Grok pane opened.' }
   })
 
   on('command.run', { command: 'grok-board' }, async $ => {
