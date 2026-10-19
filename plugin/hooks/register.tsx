@@ -387,17 +387,15 @@ export const register: Register = on => {
     const tasks = all.filter(t => t.running || t.idle < RECENT_S)
     if (e.props.hasSurvey || tasks.length === 0) return next(e)
     const { Box, Text, Svg, Button } = $.ui.resolve(e)
-    const running = tasks.filter(t => t.running).length
+    // One line: the icon says the state, so a task is its name plus, while running, its elapsed time.
+    const shown = tasks.slice(0, 4)
 
     return (
-      <Box flexDirection="row" alignItems="center" gap="sm" flexWrap="wrap">
+      <Box flexDirection="row" alignItems="center" gap="sm" flexWrap="nowrap" overflow="hidden">
         <Text dimColor>Grok</Text>
-        <Text dimColor tabular>
-          {running} running
-        </Text>
         {all.some(t => t.limited) && <Text color={COLOR.failed}>rate-limited</Text>}
-        {tasks.slice(0, 3).map(t => (
-          <Box flexDirection="row" alignItems="center" gap="xs" key={`band-${t.name}`}>
+        {shown.map(t => (
+          <Box flexDirection="row" alignItems="center" gap="xs" flexShrink={0} key={`band-${t.name}`}>
             <Svg
               source={glyph(t.state)}
               alt={LABEL[t.state]}
@@ -414,16 +412,12 @@ export const register: Register = on => {
                 await $.ui.open({ id: PANE, title: 'Grok' })
               }}
             >
-              {t.name}{' '}
-              <Text dimColor>
-                {t.running
-                  ? `${dur(t.elapsed)}${t.activity ? ` · ${short(t.activity, 40)}` : ''}`
-                  : LABEL[t.state].toLowerCase()}
-              </Text>
+              {t.name}
+              {t.running ? <Text dimColor> {dur(t.elapsed)}</Text> : ''}
             </Button>
           </Box>
         ))}
-        {tasks.length > 3 && <Text dimColor>+{tasks.length - 3}</Text>}
+        {tasks.length > shown.length && <Text dimColor>+{tasks.length - shown.length}</Text>}
         <Button
           key="band-all"
           plain
@@ -433,7 +427,7 @@ export const register: Register = on => {
             await $.ui.open({ id: PANE, title: 'Grok' })
           }}
         >
-          All
+          All ›
         </Button>
       </Box>
     )
