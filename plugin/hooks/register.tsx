@@ -16,6 +16,9 @@ const LABEL = { running: 'Running', done: 'Done', failed: 'Failed' } as const
 const ago = (s: number) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`)
 const kilo = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`)
 // Sizes on a Box are cells; an Svg is measured in CSS pixels, so the thin bar and the swatches are drawn as Svg.
+// A running task gets a spinning arc. SMIL animation plays only in an interactive Svg, so `mark` sets that for it.
+const spinner = (c: string, px: number) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${px}" height="${px}" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="${c}" stroke-opacity="0.25" stroke-width="3"/><path d="M10 3 a7 7 0 0 1 7 7" fill="none" stroke="${c}" stroke-width="3" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 10 10" to="360 10 10" dur="0.9s" repeatCount="indefinite"/></path></svg>`
 const swatch = (c: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" rx="2" fill="${c}"/></svg>`
 
@@ -84,7 +87,7 @@ export const register: Register = on => {
             )}
           </Box>
           <Box flexDirection="row" alignItems="center" gap="sm">
-            {t && <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={10} height={10} />}
+            {t && (t.state === 'running' ? <Svg source={spinner(COLOR.running, 14)} alt="Running" width={14} height={14} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={10} height={10} />)}
             <Text weight="semibold">{name}</Text>
           </Box>
           {d === null && <Text dimColor>Loading...</Text>}
@@ -154,7 +157,7 @@ export const register: Register = on => {
         {tasks.map(t => (
           <Box flexDirection="column" key={t.name}>
             <Box flexDirection="row" alignItems="center" gap="sm">
-              <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={10} height={10} />
+              {t.state === 'running' ? <Svg source={spinner(COLOR.running, 14)} alt="Running" width={14} height={14} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={10} height={10} />}
               <Box flexGrow={1}>
                 <Button key={`open-${t.name}`} plain onPress={() => void pick($, t.name)}>
                   {t.name}
@@ -189,7 +192,7 @@ export const register: Register = on => {
         </Text>
         {tasks.slice(0, 4).map(t => (
           <Box flexDirection="row" alignItems="center" gap="xs" key={`band-${t.name}`}>
-            <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={8} height={8} />
+            {t.state === 'running' ? <Svg source={spinner(COLOR.running, 12)} alt="Running" width={12} height={12} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={8} height={8} />}
             <Button
               key={`band-open-${t.name}`}
               plain
