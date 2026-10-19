@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "grok": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/grok_mcp.py"]
+    }
+  }
+}

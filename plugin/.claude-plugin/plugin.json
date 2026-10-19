@@ -1,0 +1,9 @@
+{
+  "name": "grok-bridge",
+  "version": "0.1.0",
+  "description": "Hand bounded tasks to Grok Build headless (own worktree, workspace sandbox, no commits) and list, watch, diff and stop them from Claude, with a live pane in the Claude app.",
+  "author": { "name": "noahbalboah" },
+  "license": "MIT",
+  "keywords": ["grok", "delegation", "agents", "mcp", "pane"],
+  "types": "./types/index.d.ts"
+}

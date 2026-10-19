@@ -1,0 +1,13 @@
+{
+  "name": "grok-bridge",
+  "owner": { "name": "noahbalboah" },
+  "metadata": { "description": "Delegate bounded coding tasks from Claude Code to Grok Build, and watch them from Claude" },
+  "plugins": [
+    {
+      "name": "grok-bridge",
+      "version": "0.1.0",
+      "source": "./plugin",
+      "description": "Hand bounded tasks to Grok Build headless (own worktree, sandboxed, no commits); list, watch, diff and stop them from Claude; live pane in the Claude app"
+    }
+  ]
+}
