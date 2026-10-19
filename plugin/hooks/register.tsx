@@ -96,6 +96,9 @@ async function run($: EngineInterface, args: string[]) {
 
 // What each task was at the last read, so a toast fires once per change, never on every refresh.
 const seen = new Map<string, { running: boolean; state: GrokState }>()
+// When each task's run settled, until the grace period runs out and its review is asked for.
+const settledAt = new Map<string, number>()
+const REVIEW_GRACE_MS = 60_000
 
 async function refresh($: EngineInterface) {
   const r = await run($, ['--json'])
@@ -113,10 +116,17 @@ async function refresh($: EngineInterface) {
     else if (quiet) $.ui.toast(`Grok ${t.name} has gone quiet`)
     seen.set(t.name, { running: t.running, state: t.state })
     if (t.running) await update($, reviewSent, x => (x.includes(t.name) ? x.filter(n => n !== t.name) : x))
-    // Claude reviews a finished run without being asked; the claim makes it one session, once per run.
-    if (settled && t.state !== 'shipped' && t.state !== 'review') {
-      const c = await run($, ['--claim', t.name, await $.session.id()])
-      if (c.exitCode === 0) await askReview($, t.name, t.state)
+    // Claude reviews a finished run without being asked, a minute after it settles, so an orchestrator's
+    // immediate follow-up wins; the claim makes it one session, once per run.
+    if (settled && t.state !== 'shipped' && t.state !== 'review') settledAt.set(t.name, Date.now())
+    if (t.running) settledAt.delete(t.name)
+    const since = settledAt.get(t.name)
+    if (since !== undefined && Date.now() - since >= REVIEW_GRACE_MS) {
+      settledAt.delete(t.name)
+      if (t.state !== 'shipped' && t.state !== 'review') {
+        const c = await run($, ['--claim', t.name, await $.session.id()])
+        if (c.exitCode === 0) await askReview($, t.name, t.state)
+      }
     }
   }
   await update($, board, () => tasks)
