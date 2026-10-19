@@ -12,4 +12,5 @@ Claude orchestrates and reviews; Grok does the bounded work. That saves Claude u
 3. **Watch.** `grok_list` and `grok_status` give the state, idle time and Grok's last words; the **Grok** pane (`/grok-board`) shows the same live, and a click on a task opens its brief, changes and transcript. Don't poll in a loop: check when the user asks, or after a natural wait.
 4. **Review.** `grok_diff` shows what actually changed. Judge the diff, not Grok's summary, and run the checks yourself in `<repo>/.worktrees/grok-<name>`.
 5. **Land.** Commit the way the repo expects, push the `grok/<name>` branch and open the PR as usual. If the diff is wrong, do one small follow-up run with a corrective brief; otherwise take the work to Claude.
-6. **Efficiency.** One task per run, never a long resume chain. Stop runaway tasks with `grok_stop`. Remove the worktree (`git worktree remove`) after the PR merges.
+6. **Close it out.** Once a PR is open the task shows as *PR open*, and once it merges as *Shipped*, by itself. If you reject the work, or land it without a PR, use `grok_archive` so it leaves *Needs review*.
+7. **Efficiency.** One task per run, never a long resume chain. Stop runaway tasks with `grok_stop`. Remove the worktree (`git worktree remove`) after the PR merges.

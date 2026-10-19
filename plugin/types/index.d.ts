@@ -1,4 +1,4 @@
-export type GrokState = 'running' | 'stuck' | 'done' | 'failed' | 'shipped'
+export type GrokState = 'running' | 'stuck' | 'done' | 'failed' | 'review' | 'shipped'
 
 export type GrokPr = { number?: number; state?: string; url?: string }
 
@@ -19,6 +19,8 @@ export type GrokTask = {
   hit_limit: boolean
   limited: boolean
   pr: GrokPr
+  repo: string
+  dismissed: boolean
   worktree: string
 }
 
@@ -33,7 +35,15 @@ export type GrokDetail = GrokTask & {
   entries: GrokEntry[]
 }
 
-export type GrokDraft = { name: string; repo: string; brief: string; followup: string; show: boolean }
+export type GrokDraft = {
+  name: string
+  repo: string
+  brief: string
+  followup: string
+  show: boolean
+  model: string
+  turns: string
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -46,6 +56,7 @@ declare module 'claude-code' {
       open: string[]
       draft: GrokDraft
       bandOpen: boolean
+      showArchived: boolean
     }
   }
 }

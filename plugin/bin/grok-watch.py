@@ -3,10 +3,11 @@
     grok-watch.py                    live board in a terminal (Ctrl-C to stop); --once prints it once
     grok-watch.py --json             every task, for the pane
     grok-watch.py --detail NAME      one task with its brief and transcript
-    grok-watch.py --start NAME REPO BRIEF      start a task (BRIEF is the text)
+    grok-watch.py --start NAME REPO BRIEF [TURNS] [MODEL]   start a task (BRIEF is the text)
     grok-watch.py --followup NAME TEXT         one more run on the same worktree with a correction
     grok-watch.py --stop NAME                  stop a running task
     grok-watch.py --cleanup NAME               remove a task's worktree and branch once its PR merged
+    grok-watch.py --dismiss NAME / --restore NAME   hide a finished task from the board, or bring it back
 Reads ~/.local/state/grok-tasks/<name>/ (written by grok-task.sh): brief.md, meta, pid, events.ndjson, stderr.log,
 exit, diffstat; caches the task's PR in pr.json."""
 import json, os, re, signal, subprocess, sys, time
@@ -148,6 +149,8 @@ def task_json(name):
         state = 'stuck' if idle > STUCK_S else 'running'
     elif pr.get('state') == 'MERGED':
         state = 'shipped'
+    elif pr.get('state') == 'OPEN':
+        state = 'review'
     elif code == '0':
         state = 'done'
     else:
@@ -157,7 +160,7 @@ def task_json(name):
     return {'name': name, 'state': state, 'running': running, 'tokens': tokens, 'events': events, 'idle': idle,
             'started': started, 'elapsed': int(max(0, ended - started)) if started else 0,
             'activity': activity, 'last': last, 'files': files, 'added': add, 'removed': rem,
-            'hit_limit': hit_limit, 'pr': pr, 'worktree': wt if wt and os.path.isdir(wt) else '',
+            'hit_limit': hit_limit, 'pr': pr, 'repo': m.get('repo', ''), 'dismissed': os.path.exists(os.path.join(d, 'dismissed')), 'worktree': wt if wt and os.path.isdir(wt) else '',
             'limited': any(k in low for k in ('rate limit', 'rate_limit', '429', '402', 'quota', 'usage limit',
                                               'balance exhausted'))}
 
@@ -193,13 +196,13 @@ def names():
     return sorted(os.listdir(ROOT), key=lambda n: -os.path.getmtime(os.path.join(ROOT, n)))
 
 
-def spawn(name, repo, brief_text, turns='60'):
+def spawn(name, repo, brief_text, turns='60', model=''):
     d = os.path.join(ROOT, name)
     os.makedirs(d, exist_ok=True)
     bf = os.path.join(d, 'brief.in.md')
     with open(bf, 'w') as f:
         f.write(brief_text)
-    subprocess.Popen(['sh', TASK, repo, name, bf, turns], stdin=subprocess.DEVNULL,
+    subprocess.Popen(['sh', TASK, repo, name, bf, turns] + ([model] if model else []), stdin=subprocess.DEVNULL,
                      stdout=open(os.path.join(d, 'runner.log'), 'w'), stderr=subprocess.STDOUT, start_new_session=True)
 
 
@@ -211,11 +214,13 @@ def act(argv):
     d = os.path.join(ROOT, name)
     if cmd == '--start':
         repo, brief = argv[2], argv[3]
+        turns = argv[4] if len(argv) > 4 and argv[4].isdigit() else '60'
+        model = argv[5] if len(argv) > 5 and re.match(r'^grok-[a-z0-9.-]+$', argv[5]) else ''
         if os.path.isdir(d) and alive(d):
             sys.exit(f'{name} is already running')
         if not os.path.exists(os.path.join(repo, '.git')):
             sys.exit(f'not a git checkout: {repo}')
-        spawn(name, repo, brief)
+        spawn(name, repo, brief, turns, model)
         print(f'started {name}')
     elif cmd == '--followup':
         m = meta_of(d)
@@ -227,6 +232,16 @@ def act(argv):
                 f"worktree:\n{argv[2]}")
         spawn(name, m['repo'], text, m.get('max_turns', '60'))
         print(f'follow-up started for {name}')
+    elif cmd == '--dismiss':
+        if alive(d):
+            sys.exit(f'{name} is still running; stop it first')
+        open(os.path.join(d, 'dismissed'), 'w').close()
+        print(f'archived {name}')
+    elif cmd == '--restore':
+        p = os.path.join(d, 'dismissed')
+        if os.path.exists(p):
+            os.unlink(p)
+        print(f'restored {name}')
     elif cmd == '--stop':
         pid = rd(d, 'pid').strip()
         if not pid.isdigit() or not alive(d):
@@ -261,7 +276,7 @@ def board():
 
 if __name__ == '__main__':
     a = sys.argv[1:]
-    if a and a[0] in ('--start', '--followup', '--stop', '--cleanup'):
+    if a and a[0] in ('--start', '--followup', '--stop', '--cleanup', '--dismiss', '--restore'):
         act(a)
     elif '--detail' in a:
         print(json.dumps(task_detail(a[a.index('--detail') + 1])))

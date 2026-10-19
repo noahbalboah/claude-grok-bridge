@@ -135,6 +135,13 @@ def t_stop(a):
     return f'stopped {name}'
 
 
+def t_archive(a):
+    name = need(a, 'name')
+    r = subprocess.run([sys.executable, os.path.join(HERE, '..', 'bin', 'grok-watch.py'), '--dismiss', name],
+                       capture_output=True, text=True)
+    return (r.stdout or r.stderr).strip()
+
+
 S = {'type': 'string'}
 TOOLS = {
     'grok_list': (t_list, 'List Grok tasks with state, event count and idle time.', {}, []),
@@ -147,6 +154,8 @@ TOOLS = {
                    {'name': S, 'repo': S, 'brief': S, 'max_turns': {'type': 'integer'}, 'model': S},
                    ['name', 'repo', 'brief']),
     'grok_stop': (t_stop, 'Stop a running Grok task.', {'name': S}, ['name']),
+    'grok_archive': (t_archive, 'Archive a finished Grok task so it leaves the board (after landing it, or deciding '
+                     'not to). A task whose PR opens or merges moves on by itself; archive the rest.', {'name': S}, ['name']),
 }
 
 

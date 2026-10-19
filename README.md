@@ -2,13 +2,13 @@
 
 A Claude Code plugin that hands bounded coding tasks to [Grok Build](https://x.ai) and lets Claude watch, review and stop them. Claude stays the orchestrator and reviewer; Grok does the work in its own git worktree.
 
-- **MCP tools:** `grok_start`, `grok_list`, `grok_status`, `grok_diff`, `grok_stop`
+- **MCP tools:** `grok_start`, `grok_list`, `grok_status`, `grok_diff`, `grok_stop`, `grok_archive`
 - **Skill:** `grok-delegate`, the brief → run → review the diff → land workflow
-- **Pane** (`/grok`): tasks grouped into **Running**, **Needs review** and **Shipped**, each with a live icon (spinner, ⚠ needs a look, ✓ ready, ✕ failed, merged), elapsed time, lines changed (+/− with a bar), tokens, what it is doing right now, and its PR. Click a task for its details:
+- **Pane** (`/grok`): tasks grouped into **Running**, **Needs review**, **PR open** and **Shipped** (a task moves on by itself when its `grok/<name>` PR opens and merges; **Archive** hides any other finished task), each with a live icon (spinner, ⚠ needs a look, ✓ ready, ✕ failed, merged), elapsed time, lines changed (+/− with a bar), tokens, what it is doing right now, and its PR. Click a task for its details:
   - **Stop**, **Ask Claude to review** (sends Claude a review prompt), **Clean up worktree** after the PR merges;
   - **Follow up**: type a correction and Grok gets one more run on the same worktree;
   - brief, changed files, and a transcript whose tool calls fold into expandable groups.
-  A **New task** form at the bottom starts one (name, repo, brief).
+  **+ New Grok task** opens a full form: brief (with a wrapped preview), repo picker, name (suggested from the brief), model and turn limit.
 - **Band above the prompt:** each running or recent task with its icon, elapsed time and current step; click to open it. Plus a `Grok: N running` status-line entry and a toast when a task finishes or goes quiet.
 - **CLI:** `python3 plugin/bin/grok-watch.py` for a terminal board (`--once`, `--json`, `--detail NAME`, `--start NAME REPO BRIEF`, `--followup NAME TEXT`, `--stop NAME`, `--cleanup NAME`)
 
