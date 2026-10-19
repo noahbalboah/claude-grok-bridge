@@ -10,7 +10,7 @@
 #     the completion sentinel
 # Efficiency: one task per fresh run (never a long --continue chain), tight briefs, low max-turns.
 set -u
-repo=$1; name=$2; brief=$3; turns=${4:-60}; model=${5:-${GROK_MODEL:-grok-4.7}}
+repo=$1; name=$2; brief=$3; turns=${4:-${GROK_MAX_TURNS:-150}}; model=${5:-${GROK_MODEL:-grok-4.7}}
 state="$HOME/.local/state/grok-tasks/$name"
 wt="$repo/.worktrees/grok-$name"
 mkdir -p "$state"

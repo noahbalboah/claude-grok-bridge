@@ -56,6 +56,7 @@ Then restart Claude Code, or run `/reload-plugins`.
 | `GROK_MODEL` | `grok-4.7` | model for new tasks |
 | `GROK_BASE` | remote default branch | ref the task worktree branches from |
 | `GROK_AUTO_REVIEW` | `1` | `0` stops the automatic hand-off to Claude |
+| `GROK_MAX_TURNS` | `150` | turn limit when none is given; a follow-up gets at least 150 |
 | `GROK_IDLE_LIMIT` | `1800` | seconds without output before the watchdog stops a run |
 
 ## Safety notes

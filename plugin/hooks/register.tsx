@@ -13,7 +13,7 @@ const notice = atom({ plugin: 'grok-bridge', key: 'notice' } as const, '')
 const open = atom({ plugin: 'grok-bridge', key: 'open' } as const, [] as string[])
 const draft = atom(
   { plugin: 'grok-bridge', key: 'draft' } as const,
-  { name: '', repo: '', brief: '', followup: '', show: false, model: 'grok-4.7', turns: '60' } as GrokDraft,
+  { name: '', repo: '', brief: '', followup: '', show: false, model: 'grok-4.7', turns: '150' } as GrokDraft,
 )
 // The pane's new-task view, selected like a task.
 const NEW = '+new'
@@ -308,13 +308,13 @@ export const register: Register = on => {
               )}
               {field(
                 'Turn limit',
-                'Lower keeps it bounded',
+                'Big repos need more; a follow-up gets at least 150',
                 <Select
                   key="new-turns"
                   options={[
-                    { value: '40', label: '40 turns' },
                     { value: '60', label: '60 turns' },
-                    { value: '100', label: '100 turns' },
+                    { value: '150', label: '150 turns' },
+                    { value: '250', label: '250 turns' },
                   ]}
                   value={dr.turns}
                   onSelect={v => void update($, draft, x => ({ ...x, turns: v }))}

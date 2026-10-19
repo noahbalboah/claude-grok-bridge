@@ -196,7 +196,7 @@ def names():
     return sorted(os.listdir(ROOT), key=lambda n: -os.path.getmtime(os.path.join(ROOT, n)))
 
 
-def spawn(name, repo, brief_text, turns='60', model=''):
+def spawn(name, repo, brief_text, turns='150', model=''):
     d = os.path.join(ROOT, name)
     os.makedirs(d, exist_ok=True)
     bf = os.path.join(d, 'brief.in.md')
@@ -214,7 +214,7 @@ def act(argv):
     d = os.path.join(ROOT, name)
     if cmd == '--start':
         repo, brief = argv[2], argv[3]
-        turns = argv[4] if len(argv) > 4 and argv[4].isdigit() else '60'
+        turns = argv[4] if len(argv) > 4 and argv[4].isdigit() else '150'
         model = argv[5] if len(argv) > 5 and re.match(r'^grok-[a-z0-9.-]+$', argv[5]) else ''
         if os.path.isdir(d) and alive(d):
             sys.exit(f'{name} is already running')
@@ -230,7 +230,7 @@ def act(argv):
             sys.exit(f'{name} has no recorded repo')
         text = (f"{rd(d, 'brief.md').strip()}\n\n---\nFollow-up from the reviewer, on top of the changes already in this "
                 f"worktree:\n{argv[2]}")
-        spawn(name, m['repo'], text, m.get('max_turns', '60'))
+        spawn(name, m['repo'], text, str(max(int(m.get('max_turns') or 0), 150)))
         print(f'follow-up started for {name}')
     elif cmd == '--claim':
         # One session wins the right to ask Claude for a review of this run's outcome: an exclusive create.
