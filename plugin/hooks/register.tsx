@@ -22,8 +22,16 @@ const today = (tasks: GrokTask[], now: number) =>
 // A running task gets a spinning arc. SMIL animation plays only in an interactive Svg, so `mark` sets that for it.
 const spinner = (c: string, px: number) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${px}" height="${px}" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="${c}" stroke-opacity="0.25" stroke-width="3"/><path d="M10 3 a7 7 0 0 1 7 7" fill="none" stroke="${c}" stroke-width="3" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 10 10" to="360 10 10" dur="0.9s" repeatCount="indefinite"/></path></svg>`
-const swatch = (c: string) =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" rx="2" fill="${c}"/></svg>`
+// Finished tasks get a glyph, not just a colour: a check for done, an X for failed.
+const swatch = (c: string) => {
+  const glyph =
+    c === COLOR.done
+      ? '<path d="M5.5 10.5 L8.5 13.5 L14.5 6.5" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>'
+      : c === COLOR.failed
+        ? '<path d="M6.5 6.5 L13.5 13.5 M13.5 6.5 L6.5 13.5" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>'
+        : ''
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="${c}"/>${glyph}</svg>`
+}
 
 const seen = new Map<string, GrokTask['state']>()
 // The band shows running tasks and ones that finished in the last half hour.
@@ -90,7 +98,7 @@ export const register: Register = on => {
             )}
           </Box>
           <Box flexDirection="row" alignItems="center" gap="sm">
-            {t && (t.state === 'running' ? <Svg source={spinner(COLOR.running, 14)} alt="Running" width={14} height={14} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={10} height={10} />)}
+            {t && (t.state === 'running' ? <Svg source={spinner(COLOR.running, 14)} alt="Running" width={14} height={14} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={14} height={14} />)}
             <Text weight="semibold">{name}</Text>
           </Box>
           {d === null && <Text dimColor>Loading...</Text>}
@@ -163,7 +171,7 @@ export const register: Register = on => {
         {tasks.map(t => (
           <Box flexDirection="column" key={t.name}>
             <Box flexDirection="row" alignItems="center" gap="sm">
-              {t.state === 'running' ? <Svg source={spinner(COLOR.running, 14)} alt="Running" width={14} height={14} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={10} height={10} />}
+              {t.state === 'running' ? <Svg source={spinner(COLOR.running, 14)} alt="Running" width={14} height={14} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={14} height={14} />}
               <Box flexGrow={1}>
                 <Button key={`open-${t.name}`} plain onPress={() => void pick($, t.name)}>
                   {t.name}
@@ -200,7 +208,7 @@ export const register: Register = on => {
         {all.some(t => t.limited) && <Text color={COLOR.failed}>rate-limited</Text>}
         {tasks.slice(0, 4).map(t => (
           <Box flexDirection="row" alignItems="center" gap="xs" key={`band-${t.name}`}>
-            {t.state === 'running' ? <Svg source={spinner(COLOR.running, 12)} alt="Running" width={12} height={12} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={8} height={8} />}
+            {t.state === 'running' ? <Svg source={spinner(COLOR.running, 12)} alt="Running" width={12} height={12} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={12} height={12} />}
             <Button
               key={`band-open-${t.name}`}
               plain
