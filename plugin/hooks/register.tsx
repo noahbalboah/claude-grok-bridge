@@ -170,7 +170,7 @@ export const register: Register = on => {
                 </Button>
               </Box>
               <Text dimColor tabular>
-                {LABEL[t.state]} · {t.files} file{t.files === 1 ? '' : 's'} · {ago(t.idle)}
+                {LABEL[t.state]} · {kilo(t.tokens)} tokens · {t.files} file{t.files === 1 ? '' : 's'} · {ago(t.idle)}
               </Text>
             </Box>
             {t.last !== '' && (

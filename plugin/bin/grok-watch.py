@@ -76,7 +76,7 @@ def task_json(name):
             except ValueError:
                 pass
     err = open(os.path.join(d, 'stderr.log'), errors='replace').read().lower() if os.path.exists(os.path.join(d, 'stderr.log')) else ''
-    limited = any(k in err for k in ('rate limit', 'rate_limit', '429', 'quota', 'usage limit'))
+    limited = any(k in err for k in ('rate limit', 'rate_limit', '429', '402', 'quota', 'usage limit', 'balance exhausted'))
     return {'name': name, 'state': state, 'tokens': tokens, 'limited': limited,
             'started': os.path.getmtime(os.path.join(d, 'brief.md')) if os.path.exists(os.path.join(d, 'brief.md')) else 0,
             'events': events,
