@@ -4,9 +4,13 @@ A Claude Code plugin that hands bounded coding tasks to [Grok Build](https://x.a
 
 - **MCP tools:** `grok_start`, `grok_list`, `grok_status`, `grok_diff`, `grok_stop`
 - **Skill:** `grok-delegate`, the brief → run → review the diff → land workflow
-- **Pane:** a live **Grok** pane in the Claude desktop app (`/grok-board`) that lists every task (state, files changed, idle time, last words). Click a task to see its brief, model, token count, changed files and the full transcript: text, thinking and every tool call.
-- **Band, status and toasts:** a one-line band above the prompt with each running or recently finished task (click one to open it), a `Grok: N running` status-line entry, and a toast when a task finishes. `/grok` opens the pane.
-- **CLI board:** `python3 plugin/bin/grok-watch.py` for a terminal (`--once`, `--json`, `--detail <name>`)
+- **Pane** (`/grok`): tasks grouped into **Running**, **Needs review** and **Shipped**, each with a live icon (spinner, ⚠ needs a look, ✓ ready, ✕ failed, merged), elapsed time, lines changed (+/− with a bar), tokens, what it is doing right now, and its PR. Click a task for its details:
+  - **Stop**, **Ask Claude to review** (sends Claude a review prompt), **Clean up worktree** after the PR merges;
+  - **Follow up**: type a correction and Grok gets one more run on the same worktree;
+  - brief, changed files, and a transcript whose tool calls fold into expandable groups.
+  A **New task** form at the bottom starts one (name, repo, brief).
+- **Band above the prompt:** each running or recent task with its icon, elapsed time and current step; click to open it. Plus a `Grok: N running` status-line entry and a toast when a task finishes or goes quiet.
+- **CLI:** `python3 plugin/bin/grok-watch.py` for a terminal board (`--once`, `--json`, `--detail NAME`, `--start NAME REPO BRIEF`, `--followup NAME TEXT`, `--stop NAME`, `--cleanup NAME`)
 
 ## How a task runs
 

@@ -1,100 +1,153 @@
 #!/usr/bin/env python3
-"""Live board of the Grok tasks started by scripts/grok-task.sh. Run it in a Claude Terminal tab:
-    python3 scripts/grok-watch.py          (refreshes every 5 s; Ctrl-C to stop)
-    python3 scripts/grok-watch.py --once   (print once)
-Reads ~/.local/state/grok-tasks/<name>/: events.ndjson (Grok's streamed events), exit (written when the run ends), diffstat."""
-import json, os, sys, time
+"""The Grok task board and its actions, for the grok-bridge pane and a terminal.
+    grok-watch.py                    live board in a terminal (Ctrl-C to stop); --once prints it once
+    grok-watch.py --json             every task, for the pane
+    grok-watch.py --detail NAME      one task with its brief and transcript
+    grok-watch.py --start NAME REPO BRIEF      start a task (BRIEF is the text)
+    grok-watch.py --followup NAME TEXT         one more run on the same worktree with a correction
+    grok-watch.py --stop NAME                  stop a running task
+    grok-watch.py --cleanup NAME               remove a task's worktree and branch once its PR merged
+Reads ~/.local/state/grok-tasks/<name>/ (written by grok-task.sh): brief.md, meta, pid, events.ndjson, stderr.log,
+exit, diffstat; caches the task's PR in pr.json."""
+import json, os, re, signal, subprocess, sys, time
 
 ROOT = os.path.expanduser('~/.local/state/grok-tasks')
+HERE = os.path.dirname(os.path.abspath(__file__))
+TASK = os.path.join(HERE, 'grok-task.sh')
+NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,40}$')
+STUCK_S = 300      # a running task silent this long is shown as stuck
+PR_TTL_S = 60      # how often a task's PR is looked up again
 
 
-def last_text(path, limit=110):
-    """The tail of Grok's latest streamed text or thought, joined from the last events."""
+def rd(d, f):
+    p = os.path.join(d, f)
+    return open(p, errors='replace').read() if os.path.exists(p) else ''
+
+
+def meta_of(d):
+    return dict(l.split('=', 1) for l in rd(d, 'meta').splitlines() if '=' in l)
+
+
+def alive(d):
+    pid = rd(d, 'pid').strip()
+    if not pid.isdigit():
+        return None
     try:
-        with open(path, 'rb') as f:
-            f.seek(0, 2)
-            f.seek(max(0, f.tell() - 20000))
-            lines = f.read().decode('utf-8', 'replace').splitlines()[1:]
+        os.kill(int(pid), 0)
+        return True
     except OSError:
-        return ''
-    parts = []
-    for line in lines:
-        try:
-            e = json.loads(line)
-        except ValueError:
-            continue
-        d = e.get('data')
-        if isinstance(d, str):
-            parts.append(d)
-    return ' '.join(''.join(parts).split())[-limit:]
-
-
-def row(name):
-    d = os.path.join(ROOT, name)
-    ev = os.path.join(d, 'events.ndjson')
-    ex = os.path.join(d, 'exit')
-    age = int(time.time() - os.path.getmtime(ev)) if os.path.exists(ev) else -1
-    running = not os.path.exists(ex) or (os.path.exists(ev) and os.path.getmtime(ev) > os.path.getmtime(ex))
-    state = 'RUNNING' if running else 'exit ' + open(ex).read().strip()
-    files = 0
-    if not running and os.path.exists(os.path.join(d, 'diffstat')):
-        files = sum(1 for l in open(os.path.join(d, 'diffstat')) if l[:2].strip() and '|' not in l)
-    n = sum(1 for _ in open(ev, 'rb')) if os.path.exists(ev) else 0
-    return f'{name:<18} {state:<9} events {n:>5}  last {age:>4}s  files {files:>2}\n    {last_text(ev)}'
-
-
-def board():
-    names = sorted(os.listdir(ROOT), key=lambda n: -os.path.getmtime(os.path.join(ROOT, n))) if os.path.isdir(ROOT) else []
-    out = [time.strftime('Grok tasks  %H:%M:%S'), '']
-    out += [row(n) for n in names] or ['(no tasks yet)']
-    return '\n'.join(out)
-
-
-def task_json(name):
-    d = os.path.join(ROOT, name)
-    ev = os.path.join(d, 'events.ndjson')
-    ex = os.path.join(d, 'exit')
-    code = open(ex).read().strip() if os.path.exists(ex) else None
-    pid = os.path.join(d, 'pid')
-    alive = False
-    if os.path.exists(pid):
-        try:
-            os.kill(int(open(pid).read().strip()), 0)
-            alive = True
-        except (OSError, ValueError):
-            pass
-    state = 'running' if code is None and (alive or not os.path.exists(pid)) else ('done' if code == '0' else 'failed')
-    ds = os.path.join(d, 'diffstat')
-    files = sum(1 for l in open(ds) if l[:2].strip() and '|' not in l) if os.path.exists(ds) else 0
-    events, tokens = 0, 0
-    for line in (open(ev, 'rb') if os.path.exists(ev) else []):
-        events += 1
-        if line.startswith(b'{"type":"usage"'):
-            try:
-                u = json.loads(line).get('usage') or {}
-                tokens += int(u.get('input_tokens', 0)) + int(u.get('output_tokens', 0))
-            except ValueError:
-                pass
-    err = open(os.path.join(d, 'stderr.log'), errors='replace').read().lower() if os.path.exists(os.path.join(d, 'stderr.log')) else ''
-    limited = any(k in err for k in ('rate limit', 'rate_limit', '429', '402', 'quota', 'usage limit', 'balance exhausted'))
-    return {'name': name, 'state': state, 'tokens': tokens, 'limited': limited,
-            'started': os.path.getmtime(os.path.join(d, 'brief.md')) if os.path.exists(os.path.join(d, 'brief.md')) else 0,
-            'events': events,
-            'idle': int(time.time() - os.path.getmtime(ev)) if os.path.exists(ev) else 0,
-            'files': files, 'last': last_text(ev, 140)}
+        return False
 
 
 def tool_summary(e):
     raw = e.get('rawInput') or {}
     arg = raw.get('command') or raw.get('target_file') or raw.get('path') or raw.get('pattern') or raw.get('query') or ''
-    return f"{e.get('toolName') or e.get('title') or 'tool'} {str(arg)[:160]}".strip()
+    return f"{e.get('toolName') or e.get('title') or 'tool'} {' '.join(str(arg).split())[:160]}".strip()
 
 
-def task_detail(name, limit=120):
-    """One task's brief, metadata, diffstat and its transcript, with streamed deltas joined into entries."""
+def scan(ev):
+    """One pass over the events: count, tokens, the last tool call, and the tail of Grok's words."""
+    events, tokens, activity, words = 0, 0, '', []
+    for line in (open(ev, 'rb') if os.path.exists(ev) else []):
+        events += 1
+        head = line[:24]
+        try:
+            if head.startswith(b'{"type":"usage"'):
+                u = json.loads(line).get('usage') or {}
+                tokens += int(u.get('input_tokens', 0)) + int(u.get('output_tokens', 0))
+            elif head.startswith(b'{"type":"tool_call"'):
+                activity = tool_summary(json.loads(line))
+            elif head.startswith(b'{"type":"text"') or head.startswith(b'{"type":"thought"'):
+                d = json.loads(line).get('data')
+                if isinstance(d, str):
+                    words.append(d)
+                    if len(words) > 400:
+                        words = words[-200:]
+        except ValueError:
+            pass
+    return events, tokens, activity, ' '.join(''.join(words).split())[-140:]
+
+
+def numstat(wt):
+    """Lines added and removed in the worktree, tracked changes plus new files."""
+    if not wt or not os.path.isdir(wt):
+        return 0, 0
+    add = rem = 0
+    out = subprocess.run(['git', '-C', wt, 'diff', '--numstat', 'HEAD'], capture_output=True, text=True).stdout
+    for l in out.splitlines():
+        a, r, _ = (l.split('\t') + ['', ''])[:3]
+        add += int(a) if a.isdigit() else 0
+        rem += int(r) if r.isdigit() else 0
+    new = subprocess.run(['git', '-C', wt, 'ls-files', '--others', '--exclude-standard'], capture_output=True, text=True).stdout
+    for f in new.splitlines():
+        try:
+            add += sum(1 for _ in open(os.path.join(wt, f), 'rb'))
+        except OSError:
+            pass
+    return add, rem
+
+
+def pr_of(d, name, repo):
+    """The PR whose head is grok/<name>, cached for PR_TTL_S. {} when there is none or gh is unavailable."""
+    cache = os.path.join(d, 'pr.json')
+    if os.path.exists(cache) and time.time() - os.path.getmtime(cache) < PR_TTL_S:
+        try:
+            return json.load(open(cache))
+        except ValueError:
+            pass
+    pr = {}
+    if repo and os.path.isdir(repo):
+        try:
+            r = subprocess.run(['gh', 'pr', 'list', '--head', f'grok/{name}', '--state', 'all', '--limit', '1',
+                                '--json', 'number,state,url'], cwd=repo, capture_output=True, text=True, timeout=15)
+            rows = json.loads(r.stdout or '[]') if r.returncode == 0 else []
+            pr = rows[0] if rows else {}
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            pr = {}
+    with open(cache, 'w') as f:
+        json.dump(pr, f)
+    return pr
+
+
+def task_json(name):
     d = os.path.join(ROOT, name)
-    rd = lambda f: open(os.path.join(d, f), errors='replace').read() if os.path.exists(os.path.join(d, f)) else ''
-    entries, tokens = [], 0
+    ev = os.path.join(d, 'events.ndjson')
+    code = rd(d, 'exit').strip() or None
+    up = alive(d)
+    running = code is None and up is not False
+    err = rd(d, 'stderr.log')
+    low = err.lower()
+    events, tokens, activity, last = scan(ev)
+    started = os.path.getmtime(os.path.join(d, 'brief.md')) if os.path.exists(os.path.join(d, 'brief.md')) else 0
+    ended = os.path.getmtime(os.path.join(d, 'exit')) if code is not None else time.time()
+    idle = int(time.time() - os.path.getmtime(ev)) if os.path.exists(ev) else 0
+    m = meta_of(d)
+    wt = m.get('worktree', '')
+    add, rem = numstat(wt)
+    pr = pr_of(d, name, m.get('repo', ''))
+    hit_limit = 'max turns' in low
+    if running:
+        state = 'stuck' if idle > STUCK_S else 'running'
+    elif pr.get('state') == 'MERGED':
+        state = 'shipped'
+    elif code == '0':
+        state = 'done'
+    else:
+        state = 'stuck' if hit_limit else 'failed'
+    ds = rd(d, 'diffstat')
+    files = sum(1 for l in ds.splitlines() if l[:2].strip() and '|' not in l)
+    return {'name': name, 'state': state, 'running': running, 'tokens': tokens, 'events': events, 'idle': idle,
+            'started': started, 'elapsed': int(max(0, ended - started)) if started else 0,
+            'activity': activity, 'last': last, 'files': files, 'added': add, 'removed': rem,
+            'hit_limit': hit_limit, 'pr': pr, 'worktree': wt if wt and os.path.isdir(wt) else '',
+            'limited': any(k in low for k in ('rate limit', 'rate_limit', '429', '402', 'quota', 'usage limit',
+                                              'balance exhausted'))}
+
+
+def task_detail(name, limit=160):
+    """One task with its brief, metadata, diffstat and transcript, streamed deltas joined into entries."""
+    d = os.path.join(ROOT, name)
+    entries = []
     ev = os.path.join(d, 'events.ndjson')
     for line in (open(ev, errors='replace') if os.path.exists(ev) else []):
         try:
@@ -109,26 +162,96 @@ def task_detail(name, limit=120):
                 entries.append({'kind': t, 'body': e['data']})
         elif t == 'tool_call':
             entries.append({'kind': 'tool', 'body': tool_summary(e)})
-        elif t == 'usage':
-            u = e.get('usage') or {}
-            tokens += int(u.get('input_tokens', 0)) + int(u.get('output_tokens', 0))
     for x in entries:
         x['body'] = x['body'].strip()
     entries = [x for x in entries if x['body']]
-    meta = dict(l.split('=', 1) for l in rd('meta').splitlines() if '=' in l)
-    return {**task_json(name), 'brief': rd('brief.md').strip(), 'meta': meta, 'diffstat': rd('diffstat').strip(),
-            'stderr': rd('stderr.log').strip()[-600:], 'tokens': tokens, 'total': len(entries),
-            'entries': entries[-limit:]}
+    return {**task_json(name), 'brief': rd(d, 'brief.md').strip(), 'meta': meta_of(d), 'diffstat': rd(d, 'diffstat').strip(),
+            'stderr': rd(d, 'stderr.log').strip()[-600:], 'total': len(entries), 'entries': entries[-limit:]}
 
 
-if '--detail' in sys.argv:
-    print(json.dumps(task_detail(sys.argv[sys.argv.index('--detail') + 1])))
-elif '--json' in sys.argv:
-    names = sorted(os.listdir(ROOT), key=lambda n: -os.path.getmtime(os.path.join(ROOT, n))) if os.path.isdir(ROOT) else []
-    print(json.dumps([task_json(n) for n in names]))
-elif '--once' in sys.argv:
-    print(board())
-else:
-    while True:
-        print('\033[2J\033[H' + board(), flush=True)
-        time.sleep(5)
+def names():
+    if not os.path.isdir(ROOT):
+        return []
+    return sorted(os.listdir(ROOT), key=lambda n: -os.path.getmtime(os.path.join(ROOT, n)))
+
+
+def spawn(name, repo, brief_text, turns='60'):
+    d = os.path.join(ROOT, name)
+    os.makedirs(d, exist_ok=True)
+    bf = os.path.join(d, 'brief.in.md')
+    with open(bf, 'w') as f:
+        f.write(brief_text)
+    subprocess.Popen(['sh', TASK, repo, name, bf, turns], stdin=subprocess.DEVNULL,
+                     stdout=open(os.path.join(d, 'runner.log'), 'w'), stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def act(argv):
+    """The pane's buttons. Each prints one line for the pane and exits 0 on success."""
+    cmd, name = argv[0], argv[1]
+    if not NAME.match(name):
+        sys.exit(f'bad task name: {name}')
+    d = os.path.join(ROOT, name)
+    if cmd == '--start':
+        repo, brief = argv[2], argv[3]
+        if os.path.isdir(d) and alive(d):
+            sys.exit(f'{name} is already running')
+        if not os.path.exists(os.path.join(repo, '.git')):
+            sys.exit(f'not a git checkout: {repo}')
+        spawn(name, repo, brief)
+        print(f'started {name}')
+    elif cmd == '--followup':
+        m = meta_of(d)
+        if alive(d):
+            sys.exit(f'{name} is still running')
+        if not m.get('repo'):
+            sys.exit(f'{name} has no recorded repo')
+        text = (f"{rd(d, 'brief.md').strip()}\n\n---\nFollow-up from the reviewer, on top of the changes already in this "
+                f"worktree:\n{argv[2]}")
+        spawn(name, m['repo'], text, m.get('max_turns', '60'))
+        print(f'follow-up started for {name}')
+    elif cmd == '--stop':
+        pid = rd(d, 'pid').strip()
+        if not pid.isdigit() or not alive(d):
+            sys.exit(f'{name} is not running')
+        os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+        print(f'stopped {name}')
+    elif cmd == '--cleanup':
+        m = meta_of(d)
+        wt, repo = m.get('worktree', ''), m.get('repo', '')
+        if alive(d):
+            sys.exit(f'{name} is still running')
+        if pr_of(d, name, repo).get('state') != 'MERGED':
+            sys.exit(f'{name}: its PR is not merged; nothing removed')
+        if wt and os.path.isdir(wt):
+            r = subprocess.run(['git', '-C', repo, 'worktree', 'remove', wt], capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.exit(f'worktree not removed: {r.stderr.strip()[:200]}')
+        subprocess.run(['git', '-C', repo, 'branch', '-D', f'grok/{name}'], capture_output=True)
+        print(f'cleaned up {name}')
+
+
+def row(t):
+    return (f"{t['name']:<18} {t['state']:<8} {t['elapsed'] // 60:>3}m  +{t['added']} -{t['removed']}  "
+            f"{t['tokens'] // 1000}k tok\n    {t['activity'] if t['running'] else t['last']}")
+
+
+def board():
+    out = [time.strftime('Grok tasks  %H:%M:%S'), '']
+    out += [row(task_json(n)) for n in names()] or ['(no tasks yet)']
+    return '\n'.join(out)
+
+
+if __name__ == '__main__':
+    a = sys.argv[1:]
+    if a and a[0] in ('--start', '--followup', '--stop', '--cleanup'):
+        act(a)
+    elif '--detail' in a:
+        print(json.dumps(task_detail(a[a.index('--detail') + 1])))
+    elif '--json' in a:
+        print(json.dumps([task_json(n) for n in names()]))
+    elif '--once' in a:
+        print(board())
+    else:
+        while True:
+            print('\033[2J\033[H' + board(), flush=True)
+            time.sleep(5)
