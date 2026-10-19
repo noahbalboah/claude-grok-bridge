@@ -26,6 +26,8 @@ const swatch = (c: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" rx="2" fill="${c}"/></svg>`
 
 const seen = new Map<string, GrokTask['state']>()
+// The band shows running tasks and ones that finished in the last half hour.
+const RECENT_S = 1800
 
 async function refresh($: EngineInterface) {
   const r = await $.process.run(['python3', `${$.plugin.root}/bin/grok-watch.py`, '--json'])
@@ -42,7 +44,7 @@ async function refresh($: EngineInterface) {
   }
   await update($, board, () => tasks)
   const running = tasks.filter(t => t.state === 'running').length
-  $.ui.status(running > 0 ? `Grok: ${running} running · ${kilo(today(tasks, Date.now() / 1000))} tokens today` : undefined)
+  $.ui.status(running > 0 ? `Grok: ${running} running` : undefined)
   await update($, error, () => '')
   const name = await read($, selected)
   if (name !== '') {
@@ -178,6 +180,44 @@ export const register: Register = on => {
             )}
           </Box>
         ))}
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const all = await read($, board)
+    const tasks = all.filter(t => t.state === 'running' || t.idle < RECENT_S)
+    if (e.props.hasSurvey || tasks.length === 0) return next(e)
+    const { Box, Text, Svg, Button } = $.ui.resolve(e)
+    const running = tasks.filter(t => t.state === 'running').length
+
+    return (
+      <Box flexDirection="row" alignItems="center" gap="sm" flexWrap="wrap">
+        <Text dimColor>Grok</Text>
+        <Text dimColor tabular>
+          {running} running
+        </Text>
+        {all.some(t => t.limited) && <Text color={COLOR.failed}>rate-limited</Text>}
+        {tasks.slice(0, 4).map(t => (
+          <Box flexDirection="row" alignItems="center" gap="xs" key={`band-${t.name}`}>
+            {t.state === 'running' ? <Svg source={spinner(COLOR.running, 12)} alt="Running" width={12} height={12} isInteractive /> : <Svg source={swatch(COLOR[t.state])} alt={LABEL[t.state]} width={8} height={8} />}
+            <Button
+              key={`band-open-${t.name}`}
+              plain
+              dimColor
+              onPress={async () => {
+                await pick($, t.name)
+                await $.ui.open({ id: PANE, title: 'Grok' })
+              }}
+            >
+              {t.name} <Text dimColor>{LABEL[t.state].toLowerCase()}</Text>
+            </Button>
+          </Box>
+        ))}
+        {tasks.length > 4 && <Text dimColor>+{tasks.length - 4}</Text>}
+        <Button key="band-all" plain dimColor onPress={async () => { await pick($, ''); await $.ui.open({ id: PANE, title: 'Grok' }) }}>
+          All
+        </Button>
       </Box>
     )
   })

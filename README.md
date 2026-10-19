@@ -5,7 +5,7 @@ A Claude Code plugin that hands bounded coding tasks to [Grok Build](https://x.a
 - **MCP tools:** `grok_start`, `grok_list`, `grok_status`, `grok_diff`, `grok_stop`
 - **Skill:** `grok-delegate`, the brief → run → review the diff → land workflow
 - **Pane:** a live **Grok** pane in the Claude desktop app (`/grok-board`) that lists every task (state, files changed, idle time, last words). Click a task to see its brief, model, token count, changed files and the full transcript: text, thinking and every tool call.
-- **Status and toasts:** a `Grok: N running · X tokens today` status-line entry, and a toast when a task finishes. `/grok` opens the pane.
+- **Band, status and toasts:** a one-line band above the prompt with each running or recently finished task (click one to open it), a `Grok: N running` status-line entry, and a toast when a task finishes. `/grok` opens the pane.
 - **CLI board:** `python3 plugin/bin/grok-watch.py` for a terminal (`--once`, `--json`, `--detail <name>`)
 
 ## How a task runs
