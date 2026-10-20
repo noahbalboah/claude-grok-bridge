@@ -1,8 +1,8 @@
 #!/bin/sh
 # grok-task.sh <repo> <name> <brief.md> [max-turns] [model]
 # Hand one bounded task to Grok Build headless and leave everything an orchestrator needs to check it:
-#   - makes <repo>/.worktrees/grok-<name> on a fresh branch grok/<name> from $GROK_BASE, else the remote's default
-#     branch (origin/HEAD), else origin/main
+#   - makes <repo>/.worktrees/grok-<name> on a fresh branch grok/<name> from $GROK_BASE, else the repo's own
+#     `git config grok.base` (e.g. origin/integration), else the remote's default branch (origin/HEAD), else origin/main
 #   - runs `grok -p` there: a per-task sandbox profile `grok-task-<name>` (the workspace profile, which writes only to
 #     that worktree, /tmp and ~/.grok, plus the worktree's own git admin dir <repo>/.git/worktrees/<id>, so git can
 #     update the index and HEAD; the shared .git stays read-only), no approval prompts (a headless run cannot answer
@@ -24,7 +24,8 @@ cp "$brief" "$state/brief.md"
 printf 'repo=%s\nworktree=%s\nmodel=%s\nmax_turns=%s\nstarted=%s\nowner=%s\n' "$repo" "$wt" "$model" "$turns" "$(date -u +%FT%TZ)" "$owner" >"$state/meta"
 echo $$ >"$state/pid"
 git -C "$repo" fetch -q origin
-base=${GROK_BASE:-$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD)}
+base=${GROK_BASE:-$(git -C "$repo" config --get grok.base)}
+[ -n "$base" ] || base=$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD)
 [ -n "$base" ] || base=origin/main
 [ -d "$wt" ] || git -C "$repo" worktree add -q "$wt" -b "grok/$name" "$base" || { echo 1 >"$state/exit"; exit 1; }
 
