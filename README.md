@@ -20,7 +20,7 @@ When a run finishes, fails or stalls, the plugin hands it to Claude by itself: o
 
 `grok_start` (or `plugin/bin/grok-task.sh <repo> <name> <brief.md> [max-turns] [model]`) does the following:
 
-1. Creates `<repo>/.worktrees/grok-<name>` on a new branch `grok/<name>`, from `$GROK_BASE`, else the remote's default branch, else `origin/main`.
+1. Creates `<repo>/.worktrees/grok-<name>` on a new branch `grok/<name>`, from `$GROK_BASE`, else the repo's `git config grok.base`, else the remote's default branch, else `origin/main`. A repo whose work lands on another branch than its default sets it once: `git -C <repo> config grok.base origin/integration`.
 2. Runs `grok -p` there headless, with:
    - a per-task sandbox profile `grok-task-<name>` added to `~/.grok/sandbox.toml` for the run: the workspace profile (writes only to the worktree, `/tmp` and `~/.grok`) plus the worktree's own git admin dir `<repo>/.git/worktrees/<id>`, so git can update its index and HEAD while the shared `.git` stays read-only;
    - no approval prompts, since a headless run can't answer them;
@@ -55,7 +55,7 @@ Then restart Claude Code, or run `/reload-plugins`.
 | env | default | what |
 |---|---|---|
 | `GROK_MODEL` | `grok-4.7` | model for new tasks |
-| `GROK_BASE` | remote default branch | ref the task worktree branches from |
+| `GROK_BASE` | `git config grok.base`, else the remote default branch | ref the task worktree branches from |
 | `GROK_AUTO_REVIEW` | `1` | `0` stops the automatic hand-off to Claude |
 | `GROK_MAX_TURNS` | `150` | turn limit when none is given; a follow-up gets at least 150 |
 | `GROK_IDLE_LIMIT` | `1800` | seconds without output before the watchdog stops a run |
