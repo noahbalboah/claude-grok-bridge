@@ -280,6 +280,9 @@ def act(argv):
         if pr_of(d, name, repo).get('state') != 'MERGED':
             sys.exit(f'{name}: its PR is not merged; nothing removed')
         if wt and os.path.isdir(wt):
+            # A run may have pointed the worktree's .git at a copy elsewhere, and `worktree remove` then refuses
+            # ("does not point back"); git's own repair rewrites it from the admin dir's record first.
+            subprocess.run(['git', '-C', repo, 'worktree', 'repair', wt], capture_output=True)
             r = subprocess.run(['git', '-C', repo, 'worktree', 'remove', wt], capture_output=True, text=True)
             if r.returncode != 0:
                 sys.exit(f'worktree not removed: {r.stderr.strip()[:200]}')

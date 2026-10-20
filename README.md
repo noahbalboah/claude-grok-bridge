@@ -22,11 +22,12 @@ When a run finishes, fails or stalls, the plugin hands it to Claude by itself: o
 
 1. Creates `<repo>/.worktrees/grok-<name>` on a new branch `grok/<name>`, from `$GROK_BASE`, else the remote's default branch, else `origin/main`.
 2. Runs `grok -p` there headless, with:
-   - `--sandbox workspace`, so writes go only to the worktree, `/tmp` and `~/.grok`;
+   - a per-task sandbox profile `grok-task-<name>` added to `~/.grok/sandbox.toml` for the run: the workspace profile (writes only to the worktree, `/tmp` and `~/.grok`) plus the worktree's own git admin dir `<repo>/.git/worktrees/<id>`, so git can update its index and HEAD while the shared `.git` stays read-only;
    - no approval prompts, since a headless run can't answer them;
-   - deny rules for `git commit/push/reset/checkout`, `gh`, `ssh`, `scp`, `rsync`, `curl`, `rm -rf`, anything named `deploy`, `doppler`, and reading `.env*`;
+   - deny rules for `git commit/push/reset/checkout/switch/rebase`, `gh`, `ssh`, `scp`, `rsync`, `curl`, `rm -rf`, anything named `deploy`, `doppler`, and reading `.env*`;
    - an appended rule to stay in the worktree and finish with a summary.
-3. Streams Grok's events to `~/.local/state/grok-tasks/<name>/events.ndjson`, and writes `exit` and `diffstat` when the run ends.
+3. Puts the worktree's `.git` link back with `git worktree repair` if the run pointed it anywhere else (`--cleanup` does the same before it removes a worktree).
+4. Streams Grok's events to `~/.local/state/grok-tasks/<name>/events.ndjson`, and writes `exit` and `diffstat` when the run ends.
 
 Grok never commits. You, or Claude, review `grok_diff`, run the checks, commit and open the PR.
 
