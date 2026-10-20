@@ -106,10 +106,10 @@ def numstat(wt):
     return add, rem
 
 
-def pr_of(d, name, repo):
-    """The PR whose head is grok/<name>, cached for PR_TTL_S. {} when there is none or gh is unavailable."""
+def pr_of(d, name, repo, fresh=False):
+    """The PR whose head is grok/<name>, cached for PR_TTL_S (`fresh` asks again). {} when there is none or gh is unavailable."""
     cache = os.path.join(d, 'pr.json')
-    if os.path.exists(cache) and time.time() - os.path.getmtime(cache) < PR_TTL_S:
+    if not fresh and os.path.exists(cache) and time.time() - os.path.getmtime(cache) < PR_TTL_S:
         try:
             return json.load(open(cache))
         except ValueError:
@@ -151,7 +151,9 @@ def task_json(name):
         state = 'shipped'
     elif pr.get('state') == 'OPEN':
         state = 'review'
-    elif code == '0':
+    elif code == '0' or (code is None and last):
+        # A run stopped from outside (grok_stop, or its process killed) leaves no exit file. When Grok had already
+        # said its piece, the orchestrator stopped an idle run: a finished task, not a failure.
         state = 'done'
     else:
         state = 'stuck' if hit_limit else 'failed'
@@ -239,7 +241,15 @@ def act(argv):
         owner = meta_of(d).get('owner', '')
         if owner and len(argv) > 2 and argv[2] and argv[2] != owner:
             sys.exit('another session started this task')
-        bf = os.path.join(d, 'brief.md')
+        # Someone is already handling this outcome, and asking Claude again only repeats that work: the task was
+        # archived, its run was stopped from outside (no exit file), or a PR from grok/<name> already exists.
+        if os.path.exists(os.path.join(d, 'dismissed')):
+            sys.exit('archived')
+        if not rd(d, 'exit').strip():
+            sys.exit('stopped from outside; whoever stopped it is handling it')
+        if pr_of(d, name, meta_of(d).get('repo', ''), fresh=True):
+            sys.exit('a PR already exists')
+        bf =os.path.join(d, 'brief.md')
         run_id = int(os.path.getmtime(bf)) if os.path.exists(bf) else 0
         try:
             os.close(os.open(os.path.join(d, f'claimed-{run_id}'), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
