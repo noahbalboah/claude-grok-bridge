@@ -193,7 +193,7 @@ def task_json(name):
     return {'name': name, 'state': state, 'running': running, 'tokens': tokens, 'events': events, 'idle': idle,
             'started': started, 'elapsed': int(max(0, ended - started)) if started else 0,
             'activity': activity, 'last': last, 'files': files, 'added': add, 'removed': rem,
-            'hit_limit': hit_limit, 'pr': pr, 'repo': m.get('repo', ''), 'dismissed': dismissed, 'worktree': wt if wt and os.path.isdir(wt) else '',
+            'hit_limit': hit_limit, 'pr': pr, 'repo': m.get('repo', ''), 'dismissed': dismissed, 'owner': m.get('owner', ''), 'worktree': wt if wt and os.path.isdir(wt) else '',
             'limited': any(k in low for k in ('rate limit', 'rate_limit', '429', '402', 'quota', 'usage limit',
                                               'balance exhausted'))}
 

@@ -90,8 +90,11 @@ async function askReview($: EngineInterface, name: string, state: GrokState) {
   await $.prompt.submit({ text: reviewPrompt(name, state) })
 }
 
+// A task started from the pane belongs to this session, as one started by Claude's grok_start does.
 async function run($: EngineInterface, args: string[]) {
-  return $.process.run(['python3', `${$.plugin.root}/bin/grok-watch.py`, ...args])
+  return $.process.run(['python3', `${$.plugin.root}/bin/grok-watch.py`, ...args], {
+    env: { GROK_OWNER: await $.session.id() },
+  })
 }
 
 // What each task was at the last read, so a toast fires once per change, never on every refresh.
@@ -106,7 +109,10 @@ async function refresh($: EngineInterface) {
     await update($, error, () => r.stderr.slice(0, 200) || 'grok-watch failed')
     return
   }
-  const tasks = JSON.parse(r.stdout) as GrokTask[]
+  const all = JSON.parse(r.stdout) as GrokTask[]
+  // Each session's pane, band, status and toasts show only the tasks it started.
+  const sid = await $.session.id()
+  const tasks = all.filter(t => t.owner === sid)
   // A toast when a task this session saw running settles; the first read only learns the states.
   for (const t of tasks) {
     const was = seen.get(t.name)
@@ -131,7 +137,7 @@ async function refresh($: EngineInterface) {
   }
   await update($, board, () => tasks)
   // The new-task form starts on the repo of the latest task that recorded one.
-  const wt = tasks.find(t => t.worktree !== '')?.worktree ?? ''
+  const wt = all.find(t => t.worktree !== '')?.worktree ?? ''
   const repo = wt.includes('/.worktrees/') ? wt.slice(0, wt.indexOf('/.worktrees/')) : ''
   if (repo !== '') await update($, draft, x => (x.repo === '' ? { ...x, repo } : x))
   await update($, error, () => '')
