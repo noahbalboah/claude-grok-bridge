@@ -72,7 +72,7 @@ function diffBar(add: number, rem: number): string {
 }
 
 const reviewPrompt = (name: string, state: GrokState) =>
-  `Grok task ${name} is ${LABEL[state].toLowerCase()}. Review it the grok-delegate way: grok_status for its summary, ` +
+  `Grok task ${name}: ${LABEL[state].toLowerCase()}. Review it the grok-delegate way: grok_status for its summary, ` +
   `grok_diff for what really changed, run the checks in its worktree, then commit, push grok/${name} and open the PR ` +
   `if it holds up, or send one follow-up or grok_archive it if not. Tell me the outcome in two lines.`
 
@@ -97,11 +97,27 @@ async function run($: EngineInterface, args: string[]) {
   })
 }
 
-// What each task was at the last read, so a toast fires once per change, never on every refresh.
+// What each task was at the last read, so the gone-quiet toast fires once, never on every refresh.
 const seen = new Map<string, { running: boolean; state: GrokState }>()
-// When each task's run settled, until the grace period runs out and its review is asked for.
-const settledAt = new Map<string, number>()
-const REVIEW_GRACE_MS = 60_000
+// Runs this module already tried to report, by `<task>:<ended>`, so a refused claim is not retried every refresh.
+const reported = new Set<string>()
+// A run that exited longer ago than this (while no session of its owner was open) is not reported late.
+const REPORT_WINDOW_S = 6 * 3600
+
+// The moment a run this session started exits, its outcome goes to this session as a prompt of its own: why it
+// stopped, Grok's last words and the diffstat. The claim (a lock file per run) makes it one message per run, and the
+// exit file, not this module's memory, decides it, so a run that ended during a reload is still reported.
+async function report($: EngineInterface, t: GrokTask) {
+  const key = `${t.name}:${t.ended}`
+  if (reported.has(key)) return
+  reported.add(key)
+  $.ui.toast(`Grok ${t.name}: ${t.why || LABEL[t.state].toLowerCase()}`)
+  const c = await run($, ['--claim', t.name, await $.session.id()])
+  if (c.exitCode !== 0) return
+  const n = await run($, ['--notice', t.name])
+  await update($, reviewSent, x => (x.includes(t.name) ? x : [...x, t.name]))
+  void $.prompt.submit({ text: n.exitCode === 0 ? n.stdout.trim() : reviewPrompt(t.name, t.state) })
+}
 
 async function refresh($: EngineInterface) {
   const r = await run($, ['--json'])
@@ -113,27 +129,17 @@ async function refresh($: EngineInterface) {
   // Each session's pane, band, status and toasts show only the tasks it started.
   const sid = await $.session.id()
   const tasks = all.filter(t => t.owner === sid)
-  // A toast when a task this session saw running settles; the first read only learns the states.
+  const now = Date.now() / 1000
   for (const t of tasks) {
     const was = seen.get(t.name)
-    const settled = was?.running === true && !t.running
     const quiet = was?.running === true && t.running && was.state === 'running' && t.state === 'stuck'
-    if (settled) $.ui.toast(`Grok ${t.name}: ${LABEL[t.state].toLowerCase()}`)
-    else if (quiet) $.ui.toast(`Grok ${t.name} has gone quiet`)
+    if (quiet) $.ui.toast(`Grok ${t.name} has gone quiet`)
     seen.set(t.name, { running: t.running, state: t.state })
     if (t.running) await update($, reviewSent, x => (x.includes(t.name) ? x.filter(n => n !== t.name) : x))
-    // Claude reviews a finished run without being asked, a minute after it settles, so an orchestrator's
-    // immediate follow-up wins; the claim makes it one session, once per run.
-    if (settled && t.state !== 'shipped' && t.state !== 'review') settledAt.set(t.name, Date.now())
-    if (t.running) settledAt.delete(t.name)
-    const since = settledAt.get(t.name)
-    if (since !== undefined && Date.now() - since >= REVIEW_GRACE_MS) {
-      settledAt.delete(t.name)
-      if (t.state !== 'shipped' && t.state !== 'review') {
-        const c = await run($, ['--claim', t.name, await $.session.id()])
-        if (c.exitCode === 0) await askReview($, t.name, t.state)
-      }
-    }
+    const due =
+      !t.running && !t.claimed && !t.dismissed && t.ended > 0 && now - t.ended < REPORT_WINDOW_S &&
+      t.state !== 'shipped' && t.state !== 'review'
+    if (due) void report($, t)
   }
   await update($, board, () => tasks)
   // The new-task form starts on the repo of the latest task that recorded one.
@@ -389,7 +395,12 @@ export const register: Register = on => {
                   ▸ {d.activity}
                 </Text>
               )}
-              {d.hit_limit && <Text color={COLOR.stuck}>It hit its turn limit before finishing; check the diff, then follow up.</Text>}
+              {!d.running && d.why !== '' && d.state !== 'shipped' && d.state !== 'review' && (
+                <Text color={COLOR[d.state]}>
+                  {d.why.charAt(0).toUpperCase() + d.why.slice(1)}
+                  {d.hit_limit ? '; check the diff, then follow up.' : '.'}
+                </Text>
+              )}
               <Box flexDirection="row" gap="sm" flexWrap="wrap">
                 {d.running && (
                   <Button key="stop" label="Stop" onPress={() => void action($, ['--stop', name])} />
@@ -532,6 +543,11 @@ export const register: Register = on => {
               {kilo(t.tokens)} tokens
             </Text>
           </Box>
+          {!t.running && t.why !== '' && t.state !== 'shipped' && t.state !== 'review' && (
+            <Text size="footnote" color={COLOR[t.state]}>
+              {t.why.charAt(0).toUpperCase() + t.why.slice(1)}
+            </Text>
+          )}
           {sub !== '' && (
             <Text dimColor size="footnote" mono={t.running ? true : undefined} wrap="truncate-end">
               {sub}
