@@ -10,7 +10,7 @@
     grok-watch.py --dismiss NAME / --restore NAME   hide a finished task from the board, or bring it back
 Reads ~/.local/state/grok-tasks/<name>/ (written by grok-task.sh): brief.md, meta, pid, events.ndjson, stderr.log,
 exit, diffstat; caches the task's PR in pr.json."""
-import json, os, re, signal, subprocess, sys, time
+import fcntl, json, os, re, signal, subprocess, sys, time
 
 ROOT = os.path.expanduser('~/.local/state/grok-tasks')
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -18,6 +18,10 @@ TASK = os.path.join(HERE, 'grok-task.sh')
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,40}$')
 STUCK_S = 300      # a running task silent this long is shown as stuck
 PR_TTL_S = 60      # how often a task's PR is looked up again
+SETTLED_TTL_S = 60       # how often a finished task's diff size is counted again
+ARCHIVED_TTL_S = 3600    # the same for an archived task's diff size and PR
+BOARD = os.path.expanduser('~/.local/state/grok-board.json')
+BOARD_TTL_S = 4    # every open Claude session polls --json every 5 s; they share one snapshot this fresh
 
 
 def rd(d, f):
@@ -106,23 +110,49 @@ def numstat(wt):
     return add, rem
 
 
-def pr_of(d, name, repo, fresh=False):
-    """The PR whose head is grok/<name>, cached for PR_TTL_S (`fresh` asks again). {} when there is none or gh is unavailable."""
-    cache = os.path.join(d, 'pr.json')
-    if not fresh and os.path.exists(cache) and time.time() - os.path.getmtime(cache) < PR_TTL_S:
+def cached(path, ttl):
+    """The JSON at `path` when it was written less than `ttl` seconds ago, else None."""
+    if os.path.exists(path) and time.time() - os.path.getmtime(path) < ttl:
         try:
-            return json.load(open(cache))
+            return json.load(open(path))
         except ValueError:
             pass
-    pr = {}
+    return None
+
+
+def numstat_of(d, wt, running, dismissed):
+    """numstat for the board: a running task's every read, a settled one's at most every SETTLED_TTL_S (an archived
+    one's every ARCHIVED_TTL_S), since each read is two git processes per task."""
+    cache = os.path.join(d, 'numstat.json')
+    hit = None if running else cached(cache, ARCHIVED_TTL_S if dismissed else SETTLED_TTL_S)
+    if hit is not None:
+        return tuple(hit)
+    add, rem = numstat(wt)
+    with open(cache, 'w') as f:
+        json.dump([add, rem], f)
+    return add, rem
+
+
+def pr_of(d, name, repo, fresh=False, dismissed=False):
+    """The PR whose head is grok/<name>, cached for PR_TTL_S (ARCHIVED_TTL_S for an archived task, for good once it
+    merged; `fresh` asks again). {} when there is none; the last answer when gh fails, so a timeout never wipes it."""
+    cache = os.path.join(d, 'pr.json')
+    old = cached(cache, float('inf')) or {}
+    bf = os.path.join(d, 'brief.md')
+    # A merge stays a merge until another run (a follow-up rewrites brief.md) could open a new PR.
+    merged = old.get('state') == 'MERGED' and os.path.getmtime(cache) > (os.path.getmtime(bf) if os.path.exists(bf) else 0)
+    if not fresh and (merged or cached(cache, ARCHIVED_TTL_S if dismissed else PR_TTL_S) is not None):
+        return old
+    pr = old
     if repo and os.path.isdir(repo):
         try:
             r = subprocess.run(['gh', 'pr', 'list', '--head', f'grok/{name}', '--state', 'all', '--limit', '1',
                                 '--json', 'number,state,url'], cwd=repo, capture_output=True, text=True, timeout=15)
-            rows = json.loads(r.stdout or '[]') if r.returncode == 0 else []
-            pr = rows[0] if rows else {}
+            if r.returncode == 0:
+                rows = json.loads(r.stdout or '[]')
+                pr = rows[0] if rows else {}
         except (subprocess.TimeoutExpired, ValueError, OSError):
-            pr = {}
+            pass
     with open(cache, 'w') as f:
         json.dump(pr, f)
     return pr
@@ -142,8 +172,9 @@ def task_json(name):
     started = os.path.getmtime(os.path.join(d, 'brief.md')) if os.path.exists(os.path.join(d, 'brief.md')) else 0
     ended = os.path.getmtime(os.path.join(d, 'exit')) if code is not None else time.time()
     idle = int(time.time() - os.path.getmtime(ev)) if os.path.exists(ev) else 0
-    add, rem = numstat(wt)
-    pr = pr_of(d, name, m.get('repo', ''))
+    dismissed = os.path.exists(os.path.join(d, 'dismissed'))
+    add, rem = numstat_of(d, wt, running, dismissed)
+    pr = pr_of(d, name, m.get('repo', ''), dismissed=dismissed)
     hit_limit = 'max turns' in low
     if running:
         state = 'stuck' if idle > STUCK_S else 'running'
@@ -162,7 +193,7 @@ def task_json(name):
     return {'name': name, 'state': state, 'running': running, 'tokens': tokens, 'events': events, 'idle': idle,
             'started': started, 'elapsed': int(max(0, ended - started)) if started else 0,
             'activity': activity, 'last': last, 'files': files, 'added': add, 'removed': rem,
-            'hit_limit': hit_limit, 'pr': pr, 'repo': m.get('repo', ''), 'dismissed': os.path.exists(os.path.join(d, 'dismissed')), 'worktree': wt if wt and os.path.isdir(wt) else '',
+            'hit_limit': hit_limit, 'pr': pr, 'repo': m.get('repo', ''), 'dismissed': dismissed, 'worktree': wt if wt and os.path.isdir(wt) else '',
             'limited': any(k in low for k in ('rate limit', 'rate_limit', '429', '402', 'quota', 'usage limit',
                                               'balance exhausted'))}
 
@@ -290,6 +321,25 @@ def act(argv):
         print(f'cleaned up {name}')
 
 
+def board_json():
+    """--json for every polling session at once: whoever finds the snapshot stale rebuilds it under a lock, and the
+    others wait for that and read it, so N sessions cost one board build, not N."""
+    def fresh():
+        return os.path.exists(BOARD) and time.time() - os.path.getmtime(BOARD) < BOARD_TTL_S
+    if not fresh():
+        os.makedirs(os.path.dirname(BOARD), exist_ok=True)
+        with open(BOARD + '.lock', 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not fresh():
+                out = json.dumps([task_json(n) for n in names()])
+                tmp = f'{BOARD}.{os.getpid()}'
+                with open(tmp, 'w') as f:
+                    f.write(out)
+                os.replace(tmp, BOARD)
+                return out
+    return open(BOARD).read()
+
+
 def row(t):
     return (f"{t['name']:<18} {t['state']:<8} {t['elapsed'] // 60:>3}m  +{t['added']} -{t['removed']}  "
             f"{t['tokens'] // 1000}k tok\n    {t['activity'] if t['running'] else t['last']}")
@@ -305,10 +355,13 @@ if __name__ == '__main__':
     a = sys.argv[1:]
     if a and a[0] in ('--start', '--followup', '--stop', '--cleanup', '--dismiss', '--restore', '--claim'):
         act(a)
+        # The pane refreshes right after a button and should see what it did: age the shared snapshot out.
+        if os.path.exists(BOARD):
+            os.utime(BOARD, (0, 0))
     elif '--detail' in a:
         print(json.dumps(task_detail(a[a.index('--detail') + 1])))
     elif '--json' in a:
-        print(json.dumps([task_json(n) for n in names()]))
+        print(board_json())
     elif '--once' in a:
         print(board())
     else:
