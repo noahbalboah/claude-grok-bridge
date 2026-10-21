@@ -21,6 +21,8 @@ export type GrokTask = {
   pr: GrokPr
   repo: string
   dismissed: boolean
+  // The Claude session that started the task; '' for one started outside Claude.
+  owner: string
   worktree: string
 }
 
