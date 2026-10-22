@@ -103,6 +103,14 @@ const seen = new Map<string, { running: boolean; state: GrokState }>()
 const reported = new Set<string>()
 // A run that exited longer ago than this (while no session of its owner was open) is not reported late.
 const REPORT_WINDOW_S = 6 * 3600
+// A follow-up sent in this minute wins over the automatic review.
+const REVIEW_GRACE_S = 60
+// A run that ends after this load is eligible even when the six-hour window has passed.
+const moduleStarted = Date.now() / 1000
+// The 5s poll must not start a second --json while one refresh is still running. A refresh that arrives
+// during it, including one from a button, waits and shares a single follow-up pass.
+let refreshFlight: Promise<void> | null = null
+let refreshAgain = false
 
 // The moment a run this session started exits, its outcome goes to this session as a prompt of its own: why it
 // stopped, Grok's last words and the diffstat. The claim (a lock file per run) makes it one message per run, and the
@@ -119,7 +127,25 @@ async function report($: EngineInterface, t: GrokTask) {
   void $.prompt.submit({ text: n.exitCode === 0 ? n.stdout.trim() : reviewPrompt(t.name, t.state) })
 }
 
-async function refresh($: EngineInterface) {
+function refresh($: EngineInterface): Promise<void> {
+  if (refreshFlight) {
+    refreshAgain = true
+    return refreshFlight
+  }
+  refreshFlight = (async () => {
+    try {
+      do {
+        refreshAgain = false
+        await refreshOnce($)
+      } while (refreshAgain)
+    } finally {
+      refreshFlight = null
+    }
+  })()
+  return refreshFlight
+}
+
+async function refreshOnce($: EngineInterface) {
   const r = await run($, ['--json'])
   if (r.exitCode !== 0) {
     await update($, error, () => r.stderr.slice(0, 200) || 'grok-watch failed')
@@ -136,9 +162,12 @@ async function refresh($: EngineInterface) {
     if (quiet) $.ui.toast(`Grok ${t.name} has gone quiet`)
     seen.set(t.name, { running: t.running, state: t.state })
     if (t.running) await update($, reviewSent, x => (x.includes(t.name) ? x.filter(n => n !== t.name) : x))
+    // Settled means the run has stopped in done, failed, or stuck. Eligibility does not depend on this session
+    // having watched it leave `running`: a reload, or a refresh that was still in flight when it finished, still asks.
+    const settled = !t.running && (t.state === 'done' || t.state === 'failed' || t.state === 'stuck')
+    const inWindow = t.ended >= moduleStarted || now - t.ended < REPORT_WINDOW_S
     const due =
-      !t.running && !t.claimed && !t.dismissed && t.ended > 0 && now - t.ended < REPORT_WINDOW_S &&
-      t.state !== 'shipped' && t.state !== 'review'
+      settled && !t.dismissed && !t.claimed && t.ended > 0 && inWindow && now - t.ended >= REVIEW_GRACE_S
     if (due) void report($, t)
   }
   await update($, board, () => tasks)
