@@ -8,6 +8,8 @@
     grok-watch.py --stop NAME                  stop a running task
     grok-watch.py --cleanup NAME               remove a task's worktree and branch once its PR merged
     grok-watch.py --dismiss NAME / --restore NAME   hide a finished task from the board, or bring it back
+    grok-watch.py --claim NAME SESSION         win the right to tell that session about this run's outcome, once
+    grok-watch.py --notice NAME                the message the owning session gets when a run stops
 Reads ~/.local/state/grok-tasks/<name>/ (written by grok-task.sh): brief.md, meta, pid, events.ndjson, stderr.log,
 exit, diffstat; caches the task's PR in pr.json."""
 import fcntl, json, os, re, signal, subprocess, sys, time
@@ -20,7 +22,8 @@ STUCK_S = 300      # a running task silent this long is shown as stuck
 PR_TTL_S = 60      # how often a task's PR is looked up again
 SETTLED_TTL_S = 60       # how often a finished task's diff size is counted again
 ARCHIVED_TTL_S = 3600    # the same for an archived task's diff size and PR
-BOARD = os.path.expanduser('~/.local/state/grok-board.json')
+# Named per format: sessions on an older plugin version keep writing their own snapshot, not this one.
+BOARD = os.path.expanduser('~/.local/state/grok-board-v2.json')
 BOARD_TTL_S = 4    # every open Claude session polls --json every 5 s; they share one snapshot this fresh
 
 
@@ -158,6 +161,27 @@ def pr_of(d, name, repo, fresh=False, dismissed=False):
     return pr
 
 
+def run_id(d):
+    """One run of a task: a follow-up rewrites brief.md, so its mtime names the run."""
+    bf = os.path.join(d, 'brief.md')
+    return int(os.path.getmtime(bf)) if os.path.exists(bf) else 0
+
+
+def why_of(state, code, err, hit_limit, max_turns, add, rem):
+    """Why a stopped task sits in Needs review, in words for the board and the notice."""
+    if state in ('running', 'shipped', 'review'):
+        return ''
+    if hit_limit:
+        return f'hit its {max_turns}-turn limit before finishing' if max_turns else 'hit its turn limit before finishing'
+    if 'watchdog:' in err:
+        return 'went silent and was stopped by the watchdog'
+    if code is None:
+        return 'stopped before it exited'
+    if code != '0':
+        return f'exited with code {code}'
+    return f'finished; +{add} \u2212{rem} not reviewed yet' if add or rem else 'finished with no changes'
+
+
 def task_json(name):
     d = os.path.join(ROOT, name)
     ev = os.path.join(d, 'events.ndjson')
@@ -190,7 +214,10 @@ def task_json(name):
         state = 'stuck' if hit_limit else 'failed'
     ds = rd(d, 'diffstat')
     files = sum(1 for l in ds.splitlines() if l[:2].strip() and '|' not in l)
+    why = why_of(state, code, low, hit_limit, m.get('max_turns', ''), add, rem)
+    claimed = os.path.exists(os.path.join(d, f'claimed-{run_id(d)}'))
     return {'name': name, 'state': state, 'running': running, 'tokens': tokens, 'events': events, 'idle': idle,
+            'exit_code': code, 'ended': ended if code is not None else 0, 'why': why, 'claimed': claimed,
             'started': started, 'elapsed': int(max(0, ended - started)) if started else 0,
             'activity': activity, 'last': last, 'files': files, 'added': add, 'removed': rem,
             'hit_limit': hit_limit, 'pr': pr, 'repo': m.get('repo', ''), 'dismissed': dismissed, 'owner': m.get('owner', ''), 'worktree': wt if wt and os.path.isdir(wt) else '',
@@ -221,6 +248,27 @@ def task_detail(name, limit=160):
     entries = [x for x in entries if x['body']]
     return {**task_json(name), 'brief': rd(d, 'brief.md').strip(), 'meta': meta_of(d), 'diffstat': rd(d, 'diffstat').strip(),
             'stderr': rd(d, 'stderr.log').strip()[-600:], 'total': len(entries), 'entries': entries[-limit:]}
+
+
+def notice(name, lines=8, chars=900):
+    """What the owning session reads when a run stops: the outcome and why, the end of Grok's own words, the
+    diffstat, and what to do next."""
+    t = task_detail(name)
+    words = next((x['body'] for x in reversed(t['entries']) if x['kind'] == 'text'), '')
+    tail = '\n'.join([l for l in words.splitlines() if l.strip()][-lines:])[-chars:]
+    ds = '\n'.join(t['diffstat'].splitlines()[-25:])
+    return '\n'.join([
+        f"Grok task {name} stopped: {t['why'] or t['state']}.",
+        '',
+        "Grok's last words:",
+        '\n'.join('> ' + l for l in tail.splitlines()) if tail else '> (nothing)',
+        '',
+        f"Changes: +{t['added']} \u2212{t['removed']}" + (f"\n{ds}" if ds else ' (none)'),
+        '',
+        f"Review it the grok-delegate way: grok_diff for what really changed, run the checks in its worktree, then "
+        f"commit, push grok/{name} and open the PR if it holds up, or send one follow-up or grok_archive it if not. "
+        f"If it is running again by now, a follow-up already went out: leave it. Tell me the outcome in two lines.",
+    ])
 
 
 def names():
@@ -280,13 +328,13 @@ def act(argv):
             sys.exit('stopped from outside; whoever stopped it is handling it')
         if pr_of(d, name, meta_of(d).get('repo', ''), fresh=True):
             sys.exit('a PR already exists')
-        bf =os.path.join(d, 'brief.md')
-        run_id = int(os.path.getmtime(bf)) if os.path.exists(bf) else 0
         try:
-            os.close(os.open(os.path.join(d, f'claimed-{run_id}'), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            os.close(os.open(os.path.join(d, f'claimed-{run_id(d)}'), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
         except FileExistsError:
             sys.exit('already claimed')
         print('claimed')
+    elif cmd == '--notice':
+        print(notice(name))
     elif cmd == '--dismiss':
         if alive(d):
             sys.exit(f'{name} is still running; stop it first')
@@ -353,7 +401,7 @@ def board():
 
 if __name__ == '__main__':
     a = sys.argv[1:]
-    if a and a[0] in ('--start', '--followup', '--stop', '--cleanup', '--dismiss', '--restore', '--claim'):
+    if a and a[0] in ('--start', '--followup', '--stop', '--cleanup', '--dismiss', '--restore', '--claim', '--notice'):
         act(a)
         # The pane refreshes right after a button and should see what it did: age the shared snapshot out.
         if os.path.exists(BOARD):

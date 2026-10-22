@@ -17,6 +17,13 @@ export type GrokTask = {
   added: number
   removed: number
   hit_limit: boolean
+  // The run's exit code, null while it runs or when it was stopped from outside; `ended` is when it exited.
+  exit_code: string | null
+  ended: number
+  // Why a stopped task needs review (turn limit, a nonzero exit, an unreviewed diff); '' otherwise.
+  why: string
+  // The owning session was already told about this run.
+  claimed: boolean
   limited: boolean
   pr: GrokPr
   repo: string
