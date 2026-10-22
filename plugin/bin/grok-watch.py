@@ -11,20 +11,25 @@
     grok-watch.py --claim NAME SESSION         win the right to tell that session about this run's outcome, once
     grok-watch.py --notice NAME                the message the owning session gets when a run stops
 Reads ~/.local/state/grok-tasks/<name>/ (written by grok-task.sh): brief.md, meta, pid, events.ndjson, stderr.log,
-exit, diffstat; caches the task's PR in pr.json."""
+exit, diffstat; caches the task's PR in pr.json. One `gh pr list` per repo is cached beside the board snapshot,
+and each task's event summary is reused until its events.ndjson changes size or mtime."""
 import fcntl, json, os, re, signal, subprocess, sys, time
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.expanduser('~/.local/state/grok-tasks')
 HERE = os.path.dirname(os.path.abspath(__file__))
 TASK = os.path.join(HERE, 'grok-task.sh')
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,40}$')
 STUCK_S = 300      # a running task silent this long is shown as stuck
-PR_TTL_S = 60      # how often a task's PR is looked up again
+PR_TTL_S = 60      # how often a repo's PR list is looked up again
 SETTLED_TTL_S = 60       # how often a finished task's diff size is counted again
 ARCHIVED_TTL_S = 3600    # the same for an archived task's diff size and PR
 # Named per format: sessions on an older plugin version keep writing their own snapshot, not this one.
 BOARD = os.path.expanduser('~/.local/state/grok-board-v2.json')
 BOARD_TTL_S = 4    # every open Claude session polls --json every 5 s; they share one snapshot this fresh
+# Beside the board snapshot: one PR list per repo, and one event summary per task.
+PRMAP = os.path.join(os.path.dirname(BOARD), 'grok-prs-v2.json')
+SCAN = os.path.join(os.path.dirname(BOARD), 'grok-scan-v2.json')
 
 
 def rd(d, f):
@@ -136,29 +141,182 @@ def numstat_of(d, wt, running, dismissed):
     return add, rem
 
 
+_prmap = None
+_scan = None
+_scan_dirty = False
+
+
+def load_json(path):
+    try:
+        return json.load(open(path))
+    except (OSError, ValueError):
+        return None
+
+
+def dump_json(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f'{path}.{os.getpid()}'
+    with open(tmp, 'w') as f:
+        json.dump(obj, f)
+    os.replace(tmp, path)
+
+
+def prmap():
+    global _prmap
+    if _prmap is None:
+        _prmap = load_json(PRMAP) or {}
+    return _prmap
+
+
+def gh_prs(repo):
+    """One `gh pr list` for `repo`: heads that start with grok/, or (False, {}) when gh fails.
+
+    `--search head:grok/` is not used. That qualifier is the whole branch name, not a prefix, so it would miss
+    `grok/<task>` and the board would forget open PRs."""
+    if not repo or not os.path.isdir(repo):
+        return False, {}
+    try:
+        r = subprocess.run(
+            ['gh', 'pr', 'list', '--state', 'all', '--limit', '300', '--json', 'number,state,url,headRefName'],
+            cwd=repo, capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return False, {}
+        rows = json.loads(r.stdout or '[]')
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        return False, {}
+    got = {}
+    for row in rows:
+        head = row.get('headRefName') or ''
+        if head.startswith('grok/'):
+            got[head] = {'number': row.get('number'), 'state': row.get('state'), 'url': row.get('url')}
+    return True, got
+
+
+def store_repo(repo, ok, prs):
+    """Remember a fetch. A failure keeps the previous list and is not retried until the ttl."""
+    mp = prmap()
+    entry = mp.get(repo) or {}
+    kept = prs if ok else (entry.get('prs') or {})
+    mp[repo] = {'at': time.time(), 'ok': ok, 'prs': kept}
+    return None if not ok else kept
+
+
+def repo_due(repo, ttl, force=False):
+    """True when this repo's list is missing or older than `ttl`. A remembered failure counts as fresh."""
+    if force:
+        return True
+    entry = prmap().get(repo) or {}
+    return not (entry.get('at') and time.time() - entry['at'] < ttl)
+
+
+def repo_prs(repo, ttl, force=False):
+    """PRs whose head starts with grok/, from one `gh pr list` per repo per `ttl`.
+
+    None when that call fails: the caller keeps the last answer it stored. `force` asks again."""
+    entry = prmap().get(repo) or {}
+    if not repo_due(repo, ttl, force):
+        return None if entry.get('ok') is False else (entry.get('prs') or {})
+    ok, prs = gh_prs(repo)
+    found = store_repo(repo, ok, prs)
+    dump_json(PRMAP, prmap())
+    return found
+
+
+def task_needs_pr(name):
+    """(repo, ttl) when this task would ask gh, else None. MERGED and a fresh pr.json do not."""
+    d = os.path.join(ROOT, name)
+    repo = meta_of(d).get('repo', '')
+    dismissed = os.path.exists(os.path.join(d, 'dismissed'))
+    cache = os.path.join(d, 'pr.json')
+    old = cached(cache, float('inf')) or {}
+    bf = os.path.join(d, 'brief.md')
+    merged = old.get('state') == 'MERGED' and os.path.exists(cache) and os.path.getmtime(cache) > (os.path.getmtime(bf) if os.path.exists(bf) else 0)
+    if merged:
+        return None
+    ttl = ARCHIVED_TTL_S if dismissed else PR_TTL_S
+    if cached(cache, ttl) is not None:
+        return None
+    return repo, ttl
+
+
+def prefetch_prs(ns):
+    """Fetch every repo a task still needs, one call each, at the same time. The per-task read then hits the map."""
+    need = {}
+    for name in ns:
+        due = task_needs_pr(name)
+        if not due:
+            continue
+        repo, ttl = due
+        if repo not in need or ttl < need[repo]:
+            need[repo] = ttl
+    stale = [repo for repo, ttl in need.items() if repo_due(repo, ttl)]
+    if not stale:
+        return
+    with ThreadPoolExecutor(max_workers=min(8, len(stale))) as ex:
+        got = list(ex.map(lambda repo: (repo, *gh_prs(repo)), stale))
+    for repo, ok, prs in got:
+        store_repo(repo, ok, prs)
+    dump_json(PRMAP, prmap())
+
+
 def pr_of(d, name, repo, fresh=False, dismissed=False):
-    """The PR whose head is grok/<name>, cached for PR_TTL_S (ARCHIVED_TTL_S for an archived task, for good once it
-    merged; `fresh` asks again). {} when there is none; the last answer when gh fails, so a timeout never wipes it."""
+    """The PR whose head is grok/<name>. Read from the per-repo list, which is fetched once per PR_TTL_S
+    (ARCHIVED_TTL_S for an archived task; `fresh` asks again). MERGED is kept until a follow-up rewrites brief.md.
+    {} when there is none; the last answer when gh fails, so a timeout never wipes it."""
     cache = os.path.join(d, 'pr.json')
     old = cached(cache, float('inf')) or {}
     bf = os.path.join(d, 'brief.md')
     # A merge stays a merge until another run (a follow-up rewrites brief.md) could open a new PR.
-    merged = old.get('state') == 'MERGED' and os.path.getmtime(cache) > (os.path.getmtime(bf) if os.path.exists(bf) else 0)
-    if not fresh and (merged or cached(cache, ARCHIVED_TTL_S if dismissed else PR_TTL_S) is not None):
+    merged = old.get('state') == 'MERGED' and os.path.exists(cache) and os.path.getmtime(cache) > (os.path.getmtime(bf) if os.path.exists(bf) else 0)
+    if not fresh and merged:
         return old
-    pr = old
-    if repo and os.path.isdir(repo):
-        try:
-            r = subprocess.run(['gh', 'pr', 'list', '--head', f'grok/{name}', '--state', 'all', '--limit', '1',
-                                '--json', 'number,state,url'], cwd=repo, capture_output=True, text=True, timeout=15)
-            if r.returncode == 0:
-                rows = json.loads(r.stdout or '[]')
-                pr = rows[0] if rows else {}
-        except (subprocess.TimeoutExpired, ValueError, OSError):
-            pass
+    ttl = ARCHIVED_TTL_S if dismissed else PR_TTL_S
+    if not fresh and cached(cache, ttl) is not None:
+        return old
+    found = repo_prs(repo, ttl, force=fresh)
+    if found is None:
+        pr = old
+    else:
+        pr = found.get(f'grok/{name}') or {}
+        if merged and not pr:
+            pr = old
     with open(cache, 'w') as f:
         json.dump(pr, f)
     return pr
+
+
+def scan_of(name, ev, wt):
+    """scan(), reused until events.ndjson changes size or mtime. A running task appends, so it is read again."""
+    global _scan, _scan_dirty
+    if _scan is None:
+        _scan = load_json(SCAN) or {}
+    try:
+        st = os.stat(ev)
+        size, mtime_ns = st.st_size, st.st_mtime_ns
+    except OSError:
+        size, mtime_ns = -1, 0
+    hit = _scan.get(name)
+    if isinstance(hit, dict) and hit.get('size') == size and hit.get('mtime_ns') == mtime_ns:
+        return hit['events'], hit['tokens'], hit['activity'], hit['last']
+    events, tokens, activity, last = scan(ev, wt)
+    _scan[name] = {'size': size, 'mtime_ns': mtime_ns, 'events': events, 'tokens': tokens,
+                   'activity': activity, 'last': last}
+    _scan_dirty = True
+    return events, tokens, activity, last
+
+
+def flush_scan(keep):
+    """Write the event summaries once per rebuild, and drop tasks that are gone."""
+    global _scan_dirty
+    if _scan is None:
+        return
+    for k in list(_scan):
+        if k not in keep:
+            del _scan[k]
+            _scan_dirty = True
+    if _scan_dirty:
+        dump_json(SCAN, _scan)
+        _scan_dirty = False
 
 
 def run_id(d):
@@ -192,7 +350,7 @@ def task_json(name):
     low = err.lower()
     m = meta_of(d)
     wt = m.get('worktree', '')
-    events, tokens, activity, last = scan(ev, wt)
+    events, tokens, activity, last = scan_of(name, ev, wt)
     started = os.path.getmtime(os.path.join(d, 'brief.md')) if os.path.exists(os.path.join(d, 'brief.md')) else 0
     ended = os.path.getmtime(os.path.join(d, 'exit')) if code is not None else time.time()
     idle = int(time.time() - os.path.getmtime(ev)) if os.path.exists(ev) else 0
@@ -379,7 +537,10 @@ def board_json():
         with open(BOARD + '.lock', 'w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             if not fresh():
-                out = json.dumps([task_json(n) for n in names()])
+                ns = names()
+                prefetch_prs(ns)
+                out = json.dumps([task_json(n) for n in ns])
+                flush_scan(set(ns))
                 tmp = f'{BOARD}.{os.getpid()}'
                 with open(tmp, 'w') as f:
                     f.write(out)
@@ -394,8 +555,11 @@ def row(t):
 
 
 def board():
+    ns = names()
+    prefetch_prs(ns)
     out = [time.strftime('Grok tasks  %H:%M:%S'), '']
-    out += [row(task_json(n)) for n in names()] or ['(no tasks yet)']
+    out += [row(task_json(n)) for n in ns] or ['(no tasks yet)']
+    flush_scan(set(ns))
     return '\n'.join(out)
 
 
