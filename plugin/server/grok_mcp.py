@@ -120,7 +120,9 @@ def t_start(a):
     bf = os.path.join(ROOT, name, 'brief.in.md')
     with open(bf, 'w') as f:
         f.write(brief)
-    cmd = ['sh', TASK, repo, name, bf, str(int(a.get('max_turns', 60))), a.get('model', os.environ.get('GROK_MODEL', 'grok-4.7'))]
+    # No max_turns: an empty argument lets grok-task.sh apply GROK_MAX_TURNS (default 150), as the pane and the CLI do.
+    turns = str(int(a['max_turns'])) if a.get('max_turns') else ''
+    cmd = ['sh', TASK, repo, name, bf, turns, a.get('model', os.environ.get('GROK_MODEL', 'grok-4.7'))]
     subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=open(os.path.join(ROOT, name, 'runner.log'), 'w'),
                      stderr=subprocess.STDOUT, start_new_session=True)
     return f'started grok task {name} in {repo}/.worktrees/grok-{name}; check it with grok_status'
